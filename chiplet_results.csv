@@ -1,0 +1,11 @@
+Ordering_Label,Permutation,Total_Latency,Total_Energy
+Ordering 1,ADC_Less → Shared → ADC_Less → Accumulator → Standard → Adder → Adder → Adder → Standard → Accumulator,0.0025191015296336587,0.006420676791105
+Ordering 2,Accumulator → Standard → Accumulator → Standard → Adder → Adder → Shared → ADC_Less → Shared → Adder,0.0023881794206151493,0.0059938687278300005
+Ordering 3,Standard → Adder → Adder → ADC_Less → Accumulator → Shared → Adder → ADC_Less → Accumulator → Standard,0.002910451142900697,0.006821425506235
+Ordering 4,Adder → ADC_Less → Accumulator → Shared → ADC_Less → Standard → Shared → Accumulator → Standard → Adder,0.002547344634709542,0.005728392064490001
+Ordering 5,Shared → ADC_Less → Standard → Adder → Adder → Accumulator → Standard → Shared → Adder → Accumulator,0.0024884726029584326,0.0062320591854449995
+Ordering 6,Accumulator → Adder → ADC_Less → Adder → Accumulator → Shared → ADC_Less → Standard → Adder → Shared,0.003062485513917801,0.005994277570034999
+Ordering 7,Accumulator → Standard → Adder → Accumulator → ADC_Less → Adder → ADC_Less → Shared → Adder → Standard,0.0029360452670036947,0.007223951209165001
+Ordering 8,Adder → ADC_Less → Shared → Shared → Standard → Accumulator → Adder → Standard → ADC_Less → Adder,0.0033753128240732763,0.0071224303162050005
+Ordering 9,Adder → ADC_Less → Shared → Adder → ADC_Less → Accumulator → Standard → Shared → Adder → Accumulator,0.002824709498944318,0.005486231920319999
+Ordering 10,Accumulator → Adder → Adder → Standard → ADC_Less → ADC_Less → Adder → Shared → Standard → Shared,0.0027989141744920796,0.00662894237905
