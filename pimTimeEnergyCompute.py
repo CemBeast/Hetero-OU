@@ -108,8 +108,14 @@ def runWorkloadFromCSV(csvPath, chipletName, chipletCount):
         "Power Avg (W)": totalEnergy / totalTime,
         "Power Consumption (W)": totalPower
     })
-    # Create and print DataFrame
+    # Create and format DataFrame
     df = pd.DataFrame(table_data)
+
+    # Format 'Power Avg (W)' and 'Power Consumption (W)' to plain float strings with 2 decimals
+    df["Power Avg (W)"] = df["Power Avg (W)"].apply(lambda x: f"{x:.3f}")
+    df["Power Consumption (W)"] = df["Power Consumption (W)"].apply(lambda x: f"{x:.3f}")
+
+    # Print the table, keeping the rest in scientific notation
     print(df.to_string(index=False, float_format="%.4e"))
 
     # Copy to clipboard for Excel
@@ -119,7 +125,7 @@ def runWorkloadFromCSV(csvPath, chipletName, chipletCount):
 
 
 csvPath = "workload.csv"
-runWorkloadFromCSV(csvPath, "Accumulator", 10)
+runWorkloadFromCSV(csvPath, "Accumulator", 7)
 # runWorkloadFromCSV(csvPath, "Adder", 10)
 # runWorkloadFromCSV(csvPath, "ADC_Less", 10)
 # runWorkloadFromCSV(csvPath, "Shared", 10)
