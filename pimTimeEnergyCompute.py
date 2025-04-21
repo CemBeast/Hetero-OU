@@ -70,8 +70,8 @@ def computeTimeEnergy(weights, numMACs, chipletType, chipletCount):
     #print(f"Real Time: {realTime}  Real Energy:{realEnergy}") # Add Avg Power
     return realTime, realEnergy, avgPower
 
-def runWorkloadFromCSV(csvPath, chipletName, chipletCount):
-    chipletType = chipletTypesDict[chipletName]
+def runWorkloadFromCSV(csvPath, chipletName, chipletCount, chipletDict):
+    chipletType = chipletDict[chipletName]
     print(f"Running Workload on {chipletName} with a count of {chipletCount}")
 
     table_data = []
@@ -126,7 +126,7 @@ def runWorkloadFromCSV(csvPath, chipletName, chipletCount):
 
 
 csvPath = "workload.csv"
-runWorkloadFromCSV(csvPath, "Accumulator", 7)
+runWorkloadFromCSV(csvPath, "Accumulator", 7, chipletTypesDict)
 # runWorkloadFromCSV(csvPath, "Adder", 10)
 # runWorkloadFromCSV(csvPath, "ADC_Less", 10)
 # runWorkloadFromCSV(csvPath, "Shared", 10)
@@ -146,7 +146,7 @@ runWorkloadFromCSV(csvPath, "Accumulator", 7)
 # For now we use this dummy function
 # (placeholder for real logic)
 def dummy(chipletType, rows, cols):
-    return 0, 1
+    return 0.1, 1
 
 # Make a deep copy of the original chipletTypesDict to not modify original numbers
 customChipletDict = copy.deepcopy(chipletTypesDict)
@@ -171,3 +171,5 @@ for chipName, chipType in customChipletDict.items():
 
 # You can now use customChipletDict like chipletTypesDict without affecting the original print is to see if it works
 print(customChipletDict)
+
+runWorkloadFromCSV(csvPath, "Accumulator", 7, customChipletDict)
