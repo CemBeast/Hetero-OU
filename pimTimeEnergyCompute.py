@@ -124,6 +124,7 @@ def runWorkloadFromCSV(csvPath, chipletName, chipletCount):
     print("\n✅ Table copied to clipboard (tab-separated, ready for Excel)")
 
 
+
 csvPath = "workload.csv"
 runWorkloadFromCSV(csvPath, "Accumulator", 7)
 # runWorkloadFromCSV(csvPath, "Adder", 10)
@@ -138,19 +139,19 @@ runWorkloadFromCSV(csvPath, "Accumulator", 7)
 # Avoid the ordering/ permutations as there can be infinite so it is challenging (for now)
 # f2 dummy func input is Chip type, col x rows, output is TOPS and Energy/MAC
 
+
 # Harsh will create a function that will calculate TOPS and Energy/MAC dependent 
 # on the OU size. With this information, we will run comparisons of different OU sizes on
 # each of the chiplet types and then compare from there
-
-
-# Your dummy function (placeholder for real logic)
+# For now we use this dummy function
+# (placeholder for real logic)
 def dummy(chipletType, rows, cols):
     return 0, 1
 
-# Make a deep copy of the original chipletTypesDict
+# Make a deep copy of the original chipletTypesDict to not modify original numbers
 customChipletDict = copy.deepcopy(chipletTypesDict)
 
-# Example row/col sizes for each chiplet type (you can adjust this)
+# Example row/col sizes for each chiplet type (you can adjust this) to change TOPS and Energy/MAC
 crossbarDims = {
     "Standard": (64, 64),
     "Shared": (96, 96),
@@ -159,14 +160,14 @@ crossbarDims = {
     "ADC_Less": (64, 64)
 }
 
-# Apply dummy() to update each entry in the copied dict
+# Applys dummy() to update each entry in the copied dict
 for chipName, chipType in customChipletDict.items():
-    rows, cols = crossbarDims[chipName]
-    area = rows * cols
-    new_tops, new_energy = dummy(chipType, rows, cols)
-    chipType["Size"] = area
+    rows, cols = crossbarDims[chipName] # get dimensions from the example dictionary above
+    area = rows * cols # computes size
+    new_tops, new_energy = dummy(chipType, rows, cols) # Get new TOPS and Energy/Mac
+    chipType["Size"] = area # REassign Values in the chip dictionary
     chipType["TOPS"] = new_tops
     chipType["Energy/MAC"] = new_energy
 
-# You can now use customChipletDict like chipletTypesDict without affecting the original
+# You can now use customChipletDict like chipletTypesDict without affecting the original print is to see if it works
 print(customChipletDict)
