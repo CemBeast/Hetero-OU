@@ -16,9 +16,13 @@ logger = Logging.setup_logging()
 circuit = Circuit('Voltage Divider')
 
 
-circuit.V('input', 'in', circuit.gnd, 10@u_V)
-circuit.R(1, 'in', 'out', 9@u_kOhm)
-circuit.R(2, 'out', circuit.gnd, 1@u_kOhm)
+# circuit.V('input', 'in', circuit.gnd, 10@u_V)
+# circuit.R(1, 'in', 'out', 9@u_kOhm)
+# circuit.R(2, 'out', circuit.gnd, 1@u_kOhm)
+
+circuit.V('input', 1, circuit.gnd, 10@u_V)
+circuit.R(1, 1, 2, 2@u_kΩ)
+circuit.R(2, 2, circuit.gnd, 1@u_kΩ)
 
 print("The Curcuit/Netlist:\n\n", circuit)
 
@@ -29,6 +33,9 @@ print("The simulator:\n\n", simulator)
 analysis = simulator.operating_point()
 
 print(analysis)
+
+for node in analysis.nodes.values():
+    print('Node {}: {:5.2f} V'.format(str(node), float(node))) # Fixme: format value + unit
 
 # Function to draw the circuit
 def draw_circuit(circuit):
