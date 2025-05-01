@@ -151,48 +151,79 @@ def get_model_stats(model):
     
     return stats
 
+# Function to prune and analyze any model
+def analyze_model(name, model_fn, threshold=1e-3):
+    print(f"\n🔍 Analyzing {name}...")
+    model = model_fn(weights='DEFAULT')
+    model.eval()
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if 'weight' in name:
+                mask = torch.abs(param.data) < threshold
+                param.data[mask] = 0.0
+    stats = get_model_stats(model)
+    df = pd.DataFrame(stats)
+    df.insert(0, "Layer #", range(1, len(df) + 1))
+ 
+    # Add additional analysis - summary statistics
+    total_weights_kb = df['Weights(KB)'].sum()
+    total_activations_kb = df['Activations(KB)'].sum()
+    total_macs = df['MACs'].sum()
+    avg_weight_sparsity = (df['Weight_Sparsity(0-1)'] * df['Weights(KB)']).sum() / total_weights_kb
+    avg_act_sparsity = df['Activation_Sparsity(0-1)'].mean()  # Simple mean for activation sparsity
+
+    # Save to CSV
+    #df.to_csv('vgg_stats.csv', index=False)
+    #print("Analysis complete. Results saved to 'vgg_stats.csv'")
+
+    print(f"Total weights (float64): {total_weights_kb:.2f} KB")
+    print(f"Total activations (float64): {total_activations_kb:.2f} KB")
+    print(f"Total MACs: {total_macs:,}")
+    print(f"Average weight sparsity: {avg_weight_sparsity*100:.4f}%")
+    print(f"Average activation sparsity: {avg_act_sparsity*100:.4f}%")
+
+    # Display the results
+    print("\nLayer statistics:")
+    print(df)
+
+    return df
+
 # Load VGG16 with batch norm (since VGG18 is not standard in PyTorch)
-print("Loading VGG model...")
-model = models.vgg16_bn(weights='DEFAULT')  # Using newer weights parameter instead of deprecated 'pretrained'
-model.eval()  # Set to evaluation mode
+# print("Loading VGG model...")
+# model = models.vgg16_bn(weights='DEFAULT')  # Using newer weights parameter instead of deprecated 'pretrained'
+# model.eval()  # Set to evaluation mode
 
-# Add a threshold-based pruning to artificially create some weight sparsity
-print("Applying threshold-based pruning to create sparse weights...")
-threshold = 1e-3  # Small threshold for pruning
+# # Add a threshold-based pruning to artificially create some weight sparsity
+# print("Applying threshold-based pruning to create sparse weights...")
+# threshold = 1e-3  # Small threshold for pruning
 
-# Apply pruning to each parameter
-with torch.no_grad():
-    for name, param in model.named_parameters():
-        if 'weight' in name:
-            # Create a mask for small weights
-            mask = torch.abs(param.data) < threshold
-            # Zero out weights below threshold
-            param.data[mask] = 0.0
+# # Apply pruning to each parameter
+# with torch.no_grad():
+#     for name, param in model.named_parameters():
+#         if 'weight' in name:
+#             # Create a mask for small weights
+#             mask = torch.abs(param.data) < threshold
+#             # Zero out weights below threshold
+#             param.data[mask] = 0.0
 
-# Get model statistics
-print("Calculating model statistics...")
-stats = get_model_stats(model)
+# # Get model statistics
+# print("Calculating model statistics...")
+# stats = get_model_stats(model)
 
-# Create DataFrame 
-df = pd.DataFrame(stats)
+# # Create DataFrame 
+# df = pd.DataFrame(stats)
 
-# Add additional analysis - summary statistics
-total_weights_kb = df['Weights(KB)'].sum()
-total_activations_kb = df['Activations(KB)'].sum()
-total_macs = df['MACs'].sum()
-avg_weight_sparsity = (df['Weight_Sparsity(0-1)'] * df['Weights(KB)']).sum() / total_weights_kb
-avg_act_sparsity = df['Activation_Sparsity(0-1)'].mean()  # Simple mean for activation sparsity
+models_to_run = {
+    "VGG16": models.vgg16_bn,
+    "ResNet18": models.resnet18,
+    "DenseNet121": models.densenet121,
+    "MobileNetV2": models.mobilenet_v2,
+}
+for name, fn in models_to_run.items():
+    df = analyze_model(name, fn)
+    filename = f"{name.lower()}_stats.csv"
+    df.to_csv(filename, index=False)
+    print(f"Saved: {filename}")
+#df = analyze_model("VGG16", models.vgg16_bn)
+#df = analyze_model("ResNet18", models.resnet18)
 
-# Save to CSV
-df.to_csv('vgg_stats.csv', index=False)
-
-print("Analysis complete. Results saved to 'vgg_stats.csv'")
-print(f"Total weights (float64): {total_weights_kb:.2f} KB")
-print(f"Total activations (float64): {total_activations_kb:.2f} KB")
-print(f"Total MACs: {total_macs:,}")
-print(f"Average weight sparsity: {avg_weight_sparsity*100:.4f}%")
-print(f"Average activation sparsity: {avg_act_sparsity*100:.4f}%")
-
-# Display the results
-print("\nLayer statistics:")
-print(df)
