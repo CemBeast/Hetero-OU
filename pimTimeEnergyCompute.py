@@ -4,6 +4,8 @@ import copy
 import pandas as pd
 import pyperclip  # pip install pyperclip
 
+
+
 # Unified dictionary of all chiplet types
 chipletTypesDict = {
     "Standard": {
@@ -11,25 +13,25 @@ chipletTypesDict = {
         "Bits/cell": 2,
         "TOPS": 30e12,
         "Energy/MAC": 0.87e-12
-    },
+    }, # Storage is 6MB
     "Shared": {
         "Size": 583696,
         "Bits/cell": 1,
         "TOPS": 27e12,
         "Energy/MAC": 0.30e-12
-    },
+    }, # Storage: 107MB
     "Adder": {
         "Size": 4096,
         "Bits/cell": 1,
         "TOPS": 11e12,
         "Energy/MAC": 0.18e-12
-    },
+    }, # Storage: 0.75MB
     "Accumulator": {
         "Size": 65536,
         "Bits/cell": 2,
         "TOPS": 35e12,
         "Energy/MAC": 0.22e-12
-    },
+    }, # Storage: 24MB
     "ADC_Less": {
         "Size": 16384,
         "Bits/cell": 1,
@@ -37,12 +39,12 @@ chipletTypesDict = {
         "Energy/MAC": 0.27e-12,
         "non_mac": 6e5,
         "non_mac_energy": 0.6e-11
-    }
+    } # Storage: 48MB
 }
 
 def computeTimeEnergy(weights, numMACs, chipletType, chipletCount):
-    numTiles = 40 # Fixed for now
-    numChiplets = 16 # Fixed for now
+    numArrays = 40 # Fixed for now 40 or 96
+    numTiles = 16 # Fixed for now
 
     size = chipletType["Size"] # Crossbar capacity
     #print(f"Chip size: {size}")
@@ -54,7 +56,7 @@ def computeTimeEnergy(weights, numMACs, chipletType, chipletCount):
     #print(f"Energy/MAC: {energyPerMAC}") # consider heterogenous OU energy 
     
 
-    storage = math.ceil((weights * (8 /bitsPerCell)) / (size * numTiles * numChiplets))
+    storage = math.ceil((weights * (8 /bitsPerCell)) / (size * numArrays * numTiles))
     #print(f"Storage: {storage}")
     # change to consider heterogenous OUs
     storageScale = storage / chipletCount # if StorageScale is above 1 then the weights are too much for the number of chips
@@ -126,7 +128,7 @@ def runWorkloadFromCSV(csvPath, chipletName, chipletCount, chipletDict):
 
 
 csvPath = "workload.csv"
-runWorkloadFromCSV(csvPath, "Accumulator", 7, chipletTypesDict)
+#runWorkloadFromCSV(csvPath, "Accumulator", 7, chipletTypesDict)
 # runWorkloadFromCSV(csvPath, "Adder", 10)
 # runWorkloadFromCSV(csvPath, "ADC_Less", 10)
 # runWorkloadFromCSV(csvPath, "Shared", 10)
@@ -178,9 +180,12 @@ for chipName, chipType in customChipletDict.items():
 #  [24, 28, 0, 18, 12] where ech element value corresponds to the toatal 
 # number of chiplets from 𝑆𝑡𝑎𝑛𝑑𝑎𝑟𝑑 , 𝑆ℎ𝑎𝑟𝑒𝑑 , 𝐴𝑑𝑑𝑒𝑟 , and 𝐴𝑐𝑐𝑢𝑚𝑢𝑙𝑎𝑡𝑜𝑟, and 𝐴𝐷𝐶1Less types
 
+# This assumes that we can only run one layer at a time, so if the storage is 0.4 it will
+# run on just one chip and not try to see if it can fit more from the next layer. 
+# Runs layer by layer for workload rather than all possible weights that fit in 1 chip
 def runHeterogeneousWorkload(csvPath, chipletCounts, chipletDict):
     chipletNames = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
-    numTiles = 40
+    numTiles = 96
     numChiplets = 16  # Fixed architecture value
 
     # Track remaining chiplets for each type - Dictionary type for chip name and count
@@ -270,3 +275,241 @@ def runHeterogeneousWorkload(csvPath, chipletCounts, chipletDict):
 
 chipCounts = [24, 28, 0, 18, 12]  # Standard, Shared, Adder, Accumulator, ADC_Less
 runHeterogeneousWorkload("workload.csv", chipCounts, chipletTypesDict)
+
+# Previous code with pseudo code to make it able to handle multiple layers in one chip
+# def runHeterogeneousWorkload(csvPath, chipletCounts, chipletDict):
+#     chipletNames = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
+#     numTiles = 40
+#     numChiplets = 16  # Fixed architecture value
+
+#     # Track remaining chiplets for each type - Dictionary type for chip name and count
+#     chipletPools = {name: chipletCounts[i] for i, name in enumerate(chipletNames)}
+
+#     table_data = []
+#     totalTime = totalEnergy = totalPower = 0
+
+#     with open(csvPath, 'r') as file:
+#         reader = csv.DictReader(file)
+#         for row in reader:
+#             layer = row["Layer"]
+#             weights = int(row["Weights"])
+#             macs = int(row["MACs"])
+#             assigned = False
+
+#             for chipName in chipletNames:
+#                 chip = chipletDict[chipName]
+#                 bitsPerCell = chip["Bits/cell"]
+#                 size = chip["Size"]
+
+#                 layerStorage = weights * 8
+#                 chipStorage = size * bitsPerCell * numTiles * numChiplets
+#                 if layerStorage < chipStorage:
+#                     # deduct layer storage from chipstorage so yoou can track
+#                     # how much storage is left within the chip. in this if statement 
+#                     # we then want to check for the next layer so we place a break
+#                     break
+#                 else:
+#                     # if the layer is finally more than the current chipstorage then we
+#                     # compute how many chips were needed for all the layers up until this one
+#                     # or if no layer could fit in the chip then we increase the chips used and figure out 
+#                     # Chips needed
+#                     # Previously we Computed how many chiplets this layer needs, using code below
+#                     # chipsNeeded = math.ceil((weights * (8 / bitsPerCell)) / (size * numTiles * numChiplets))
+#                     # this may work but im unsure.
+#                 if chipletPools[chipName] >= chipsNeeded:
+#                     chipletPools[chipName] -= chipsNeeded  # Deduct used chips
+#                     t, e, p = computeTimeEnergy(weights, macs, chip, chipsNeeded)
+#                     power = p * chipsNeeded
+
+#                     totalTime += t
+#                     totalEnergy += e
+#                     totalPower += power
+
+#                     table_data.append({
+#                         "Layer": layer,
+#                         "Chiplet": chipName,
+#                         "Chiplets Used": chipsNeeded,
+#                         "Time (s)": t,
+#                         "Energy (J)": e,
+#                         "Power Avg (W)": p,
+#                         "Power Consumption (W)": power
+#                     })
+
+#                     assigned = True
+#                     break  # Stop after assigning to one chip group
+
+#             if not assigned:
+#                 print(f"❌ Not enough chiplets to assign layer {layer}")
+#                 table_data.append({
+#                     "Layer": layer,
+#                     "Chiplet": "UNASSIGNED",
+#                     "Chiplets Used": "N/A",
+#                     "Time (s)": 0,
+#                     "Energy (J)": 0,
+#                     "Power Avg (W)": 0,
+#                     "Power Consumption (W)": 0
+#                 })
+
+#     # Append totals
+#     table_data.append({
+#         "Layer": "TOTAL",
+#         "Chiplet": "-",
+#         "Chiplets Used": "-",
+#         "Time (s)": totalTime,
+#         "Energy (J)": totalEnergy,
+#         "Power Avg (W)": totalEnergy / totalTime if totalTime > 0 else 0,
+#         "Power Consumption (W)": totalPower
+#     })
+
+#     # Show how many chiplets were used and how many are left
+#     print("\n🔧 Chiplet Usage Summary:")
+#     print("Chiplet Type | Initial | Used | Remaining")
+#     for name in chipletNames:
+#         initial = chipletCounts[chipletNames.index(name)]
+#         remaining = chipletPools[name]
+#         used = initial - remaining
+#         print(f"{name:<13} | {initial:^7} | {used:^5} | {remaining:^9}")
+
+#     df = pd.DataFrame(table_data)
+#     df["Power Avg (W)"] = df["Power Avg (W)"].apply(lambda x: f"{float(x):.3f}" if x != "N/A" else x)
+#     df["Power Consumption (W)"] = df["Power Consumption (W)"].apply(lambda x: f"{float(x):.3f}" if x != "N/A" else x)
+
+#     print(df.to_string(index=False, float_format="%.4e"))
+
+#     pyperclip.copy(df.to_csv(sep='\t', index=False, float_format="%.4e"))
+#     print("\n✅ Heterogeneous table copied to clipboard (tab-separated for Excel)")
+
+def runHeterogeneousWorkload2(csvPath, chipletCounts, chipletDict):
+    chipletNames = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
+    numTiles = 96
+    numChiplets = 16  # Fixed architecture value
+
+    chipletPools = {name: chipletCounts[i] for i, name in enumerate(chipletNames)}
+    table_data = []
+    totalTime = totalEnergy = totalPower = 0
+
+    with open(csvPath, 'r') as file:
+        reader = list(csv.DictReader(file))
+
+    i = 0
+    while i < len(reader):
+        layer_group = []     # layers to assign together
+        total_storage_bits = 0
+        total_weights = 0
+        total_macs = 0
+
+        # Try to group layers until one doesn't fit
+        for j in range(i, len(reader)):
+            layer = reader[j]["Layer"]
+            weights = int(reader[j]["Weights"])
+            macs = int(reader[j]["MACs"])
+            storage_bits = weights * 8
+
+            total_storage_bits += storage_bits
+            total_weights += weights
+            total_macs += macs
+            layer_group.append((j, layer, weights, macs))
+
+            # Check if this group can fit in any chip type
+            fits_any = False
+            for chipName in chipletNames:
+                chip = chipletDict[chipName]
+                bitsPerCell = chip["Bits/cell"]
+                chipStorage = chip["Size"] * bitsPerCell * numTiles * numChiplets
+                chipsNeeded = math.ceil(total_storage_bits / chipStorage)
+                if chipletPools[chipName] >= chipsNeeded:
+                    fits_any = True
+                    break
+
+            if not fits_any:
+                if len(layer_group) == 1:
+                # Let large single layers go through, even if they exceed one chiplet
+                    break
+                else:
+                    layer_group.pop()
+                    total_storage_bits -= storage_bits
+                    total_weights -= weights
+                    total_macs -= macs
+                    break
+
+        # Now assign the group to the best chiplet type
+        assigned = False
+        for chipName in chipletNames:
+            chip = chipletDict[chipName]
+            bitsPerCell = chip["Bits/cell"]
+            chipStorage = chip["Size"] * bitsPerCell * numTiles * numChiplets
+            chipsNeeded = math.ceil(total_storage_bits / chipStorage)
+
+            if chipletPools[chipName] >= chipsNeeded:
+                chipletPools[chipName] -= chipsNeeded
+                if chipsNeeded == 0:
+                    print(f"⚠️ Skipping empty layer group starting at row {i}")
+                    i += 1  # prevent infinite loop
+                    break
+                t, e, p = computeTimeEnergy(total_weights, total_macs, chip, chipsNeeded)
+                power = p * chipsNeeded
+
+                totalTime += t
+                totalEnergy += e
+                totalPower += power
+
+                for (_, layer, _, _) in layer_group:
+                    table_data.append({
+                        "Layer": layer,
+                        "Chiplet": chipName,
+                        "Chiplets Used": chipsNeeded,
+                        "Time (s)": t,
+                        "Energy (J)": e,
+                        "Power Avg (W)": p,
+                        "Power Consumption (W)": power
+                    })
+
+                assigned = True
+                break
+
+        # If not assigned, mark all in group as unassigned
+        if not assigned:
+            for (_, layer, _, _) in layer_group:
+                print(f"❌ Not enough chiplets to assign layer {layer}")
+                table_data.append({
+                    "Layer": layer,
+                    "Chiplet": "UNASSIGNED",
+                    "Chiplets Used": "N/A",
+                    "Time (s)": 0,
+                    "Energy (J)": 0,
+                    "Power Avg (W)": 0,
+                    "Power Consumption (W)": 0
+                })
+
+        i += len(layer_group)
+
+    # Totals row
+    table_data.append({
+        "Layer": "TOTAL",
+        "Chiplet": "-",
+        "Chiplets Used": "-",
+        "Time (s)": totalTime,
+        "Energy (J)": totalEnergy,
+        "Power Avg (W)": totalEnergy / totalTime if totalTime > 0 else 0,
+        "Power Consumption (W)": totalPower
+    })
+
+    # Usage summary
+    print("\n🔧 Chiplet Usage Summary:")
+    print("Chiplet Type | Initial | Used | Remaining")
+    for name in chipletNames:
+        initial = chipletCounts[chipletNames.index(name)]
+        remaining = chipletPools[name]
+        used = initial - remaining
+        print(f"{name:<13} | {initial:^7} | {used:^5} | {remaining:^9}")
+
+    df = pd.DataFrame(table_data)
+    df["Power Avg (W)"] = df["Power Avg (W)"].apply(lambda x: f"{float(x):.3f}" if x != "N/A" else x)
+    df["Power Consumption (W)"] = df["Power Consumption (W)"].apply(lambda x: f"{float(x):.3f}" if x != "N/A" else x)
+
+    print(df.to_string(index=False, float_format="%.4e"))
+    pyperclip.copy(df.to_csv(sep='\t', index=False, float_format="%.4e"))
+    print("\n✅ Heterogeneous table copied to clipboard (tab-separated for Excel)")
+
+chipCounts = [24, 28, 0, 18, 12]  # Standard, Shared, Adder, Accumulator, ADC_Less
+runHeterogeneousWorkload2("workload.csv", chipCounts, chipletTypesDict)

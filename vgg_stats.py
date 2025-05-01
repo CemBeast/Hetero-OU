@@ -16,7 +16,7 @@ def calculate_sparsity(tensor, threshold=1e-6):
     sparse_elements = count_sparse_elements(tensor, threshold)
     return sparse_elements / total_elements
 
-# Function to register hooks for activation sparsity
+# Function to register hooks for activation sparsity and memory usage
 def register_activation_hooks(model):
     activation_stats = {}
     hooks = []
@@ -25,10 +25,20 @@ def register_activation_hooks(model):
         def hook(module, input, output):
             # Store activations for analysis
             if isinstance(output, torch.Tensor):
-                activation_stats[name] = output.detach().clone()
+                activation_stats[name] = {
+                    'tensor': output.detach().clone(),
+                    'size_kb': output.numel() * 8 / 1024  # Size in KB assuming float64 (8 bytes)
+                }
             else:
                 # Handle tuple outputs
-                activation_stats[name] = output[0].detach().clone() if isinstance(output, tuple) else None
+                if isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], torch.Tensor):
+                    tensor = output[0].detach().clone()
+                    activation_stats[name] = {
+                        'tensor': tensor,
+                        'size_kb': tensor.numel() * 8 / 1024  # Size in KB assuming float64 (8 bytes)
+                    }
+                else:
+                    activation_stats[name] = None
         return hook
     
     # Register hooks for all modules to capture activations
@@ -57,7 +67,7 @@ def get_model_stats(model):
     # Create a dummy input with values between 0-1 (more realistic than random noise)
     dummy_input = torch.rand(1, 3, 224, 224)
     
-    # Register hooks for activation sparsity
+    # Register hooks for activation sparsity and memory
     activation_stats, hooks = register_activation_hooks(model)
     
     # Forward pass to trigger hooks
@@ -101,8 +111,9 @@ def get_model_stats(model):
     # Collect stats for each layer
     for name, module in model.named_modules():
         if isinstance(module, (nn.Conv2d, nn.Linear)):
-            # Weight stats
+            # Weight stats - calculate memory in KB (assuming float64 = 8 bytes)
             weight_params = module.weight.numel()
+            weight_memory_kb = weight_params * 8 / 1024  # Use 8 bytes for float64
             weight_sparsity = calculate_sparsity(module.weight, threshold=1e-4)
             
             # MACs calculation
@@ -110,29 +121,32 @@ def get_model_stats(model):
             if name in input_shapes and name in output_shapes:
                 macs = calculate_macs(module, input_shapes[name], output_shapes[name])
             
-            # Activation sparsity - look for ReLU outputs which should have true zeros
+            # Activation sparsity and memory - look for this layer and ReLU outputs
             act_sparsity = 0
+            act_memory_kb = 0
             
             # For each layer, look for corresponding activation
-            # Usually the activations after ReLU will show sparsity
-            if name in activation_stats:
-                activation = activation_stats[name]
-                if activation is not None:
-                    act_sparsity = calculate_sparsity(activation)
+            if name in activation_stats and activation_stats[name] is not None:
+                act_info = activation_stats[name]
+                act_tensor = act_info['tensor']
+                act_memory_kb = act_info['size_kb']
+                act_sparsity = calculate_sparsity(act_tensor)
             
             # Special handling for ReLU activations which should show true sparsity
             relu_name = name.replace('conv', 'relu').replace('linear', 'relu')
-            if relu_name in activation_stats:
-                activation = activation_stats[relu_name]
-                if activation is not None:
-                    act_sparsity = calculate_sparsity(activation)
+            if relu_name in activation_stats and activation_stats[relu_name] is not None:
+                act_info = activation_stats[relu_name]
+                act_tensor = act_info['tensor']
+                act_memory_kb = act_info['size_kb']
+                act_sparsity = calculate_sparsity(act_tensor)
             
             stats.append({
                 'Layer': name,
-                'Weights': weight_params,
+                'Weights(KB)': weight_memory_kb,
                 'MACs': macs,
-                'Weight_Sparsity': weight_sparsity,
-                'Activation_Sparsity': act_sparsity
+                'Weight_Sparsity(0-1)': weight_sparsity,
+                'Activation_Sparsity(0-1)': act_sparsity,
+                'Activations(KB)': act_memory_kb
             })
     
     return stats
@@ -143,7 +157,6 @@ model = models.vgg16_bn(weights='DEFAULT')  # Using newer weights parameter inst
 model.eval()  # Set to evaluation mode
 
 # Add a threshold-based pruning to artificially create some weight sparsity
-# This will help demonstrate the sparsity calculation
 print("Applying threshold-based pruning to create sparse weights...")
 threshold = 1e-3  # Small threshold for pruning
 
@@ -164,24 +177,18 @@ stats = get_model_stats(model)
 df = pd.DataFrame(stats)
 
 # Add additional analysis - summary statistics
-total_weights = df['Weights'].sum()
+total_weights_kb = df['Weights(KB)'].sum()
+total_activations_kb = df['Activations(KB)'].sum()
 total_macs = df['MACs'].sum()
-avg_weight_sparsity = (df['Weight_Sparsity'] * df['Weights']).sum() / total_weights
-avg_act_sparsity = df['Activation_Sparsity'].mean()  # Simple mean for activation sparsity
-
-# Format percentages for better readability
-df['Weight_Sparsity'] = df['Weight_Sparsity']
-df['Activation_Sparsity'] = df['Activation_Sparsity']
-
-# Rename columns to include '%' in the header
-df.rename(columns={'Weight_Sparsity': 'Weight_Sparsity(0-1)', 'Activation_Sparsity': 'Activation_Sparsity(0-1)'}, inplace=True)
+avg_weight_sparsity = (df['Weight_Sparsity(0-1)'] * df['Weights(KB)']).sum() / total_weights_kb
+avg_act_sparsity = df['Activation_Sparsity(0-1)'].mean()  # Simple mean for activation sparsity
 
 # Save to CSV
 df.to_csv('vgg_stats.csv', index=False)
 
-
 print("Analysis complete. Results saved to 'vgg_stats.csv'")
-print(f"Total weights: {total_weights:,}")
+print(f"Total weights (float64): {total_weights_kb:.2f} KB")
+print(f"Total activations (float64): {total_activations_kb:.2f} KB")
 print(f"Total MACs: {total_macs:,}")
 print(f"Average weight sparsity: {avg_weight_sparsity*100:.4f}%")
 print(f"Average activation sparsity: {avg_act_sparsity*100:.4f}%")
