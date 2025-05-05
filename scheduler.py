@@ -1,7 +1,5 @@
-import csv
-import math
 import pandas as pd
-import pyperclip
+import pprint
 
 # Unified dictionary of all chiplet types
 chipletTypesDict = {
@@ -83,6 +81,7 @@ def scheduler(csv_path, chip_distribution):
 
     # 2.3 Allocate each layer across the chips
     layer_allocations = []
+    used_chip_order = []
     for _, row in df.iterrows():
         layer_id      = int(row["Layer #"])
         remaining_bits = row["Adjusted_Weights_bits"]
@@ -104,18 +103,17 @@ def scheduler(csv_path, chip_distribution):
                 "chip_type":     chip["type"],
                 "allocated_bits": int(alloc)
             })
+            used_chip_order.append(chip["id"])
 
         if remaining_bits > 0:
-            raise RuntimeError(
-                f"Layer {layer_id} could not be fully allocated: {remaining_bits:.0f} bits remain"
-            )
+            raise RuntimeError(f"Layer {layer_id} could not be fully allocated: {remaining_bits:.0f} bits remain")
 
         layer_allocations.append({
             "layer":       layer_id,
             "allocations": allocations
         })
 
-    return layer_allocations
+    return layer_allocations, chip_inventory, used_chip_order
 
 # -----------------------------------------------------------------------------
 # 3) Example usage
@@ -127,8 +125,30 @@ if __name__ == "__main__":
     # Example: [10 Standard, 0 Shared, 0 Adder, 0 Accumulator, 1 ADC_Less]
     chip_dist = [24, 28, 0, 18, 12]
 
-    allocations = scheduler(workload_csv, chip_dist)
+    allocations, inventory, used_order = scheduler(workload_csv, chip_dist)
 
-    # Pretty‑print the results
-    import pprint
+    # 3.1 Pretty‑print the results
+    print("\n=== Layer Allocations ===")
     pprint.pprint(allocations, width=120)
+
+    # 3.2 Summary: count chips used per type
+    #   A chip is "used" if capacity_left < original_capacity
+    orig_caps = {chip["id"] : get_chip_capacity_bits(chip["type"]) for chip in inventory}
+    used_summary = {}
+    for chip in inventory:
+        if chip["capacity_left"] < orig_caps[chip["id"]]:
+            used_summary[chip["type"]] = used_summary.get(chip["type"], 0) + 1
+    
+    print("\n=== Chips Used Per Type ===")
+    for ctype, cnt in used_summary.items():
+        print(f" {ctype}: {cnt}")
+
+    # 3.3 Last chip used and its fill percentage
+    last_chip_id = used_order[-1]
+    last_chip = next(c for c in inventory if c["id"] == last_chip_id)
+    orig_capacity = orig_caps[last_chip_id]
+    used_bits = orig_capacity - last_chip["capacity_left"]
+    pct_full = (used_bits / orig_capacity) * 100
+
+    print(f"\nLast chip used: {last_chip_id} ({last_chip['type']})")
+    print(f"  -> Filled: {used_bits:.0f} bits / {orig_capacity} bits = {pct_full:.2f}%")
