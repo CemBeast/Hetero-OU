@@ -3,6 +3,18 @@ import pprint
 import math
 
 # -----------------------------------------------------------------------------
+# Import chiplet specs from pim_scaling.py
+# -----------------------------------------------------------------------------
+# Chiplet specs with TOPS and energy_per_mac
+chiplet_specs = {
+    "Standard":    {"base": (128, 128), "rowKnob": 87.5, "colKnob": 12.5, "tops": 30.0, "energy_per_mac": 0.87e-12},
+    "Shared":      {"base": (764, 764), "rowKnob": 68.0, "colKnob": 1.3,  "tops": 27.0, "energy_per_mac": 0.30e-12},
+    "Adder":       {"base": (64,  64),  "rowKnob": 81.0, "colKnob": 0.4,  "tops": 11.0, "energy_per_mac": 0.18e-12},
+    "Accumulator": {"base": (256, 256),"rowKnob": 55.0, "colKnob": 51.0, "tops": 35.0, "energy_per_mac": 0.22e-12},
+    "ADC_Less":    {"base": (128, 128),"rowKnob": 94.4, "colKnob": 20.0, "tops": 3.8,  "energy_per_mac": 0.27e-12},
+}
+
+# -----------------------------------------------------------------------------
 # Chip specs & capacity helper 
 # -----------------------------------------------------------------------------
 chipletTypesDict = {
@@ -49,6 +61,81 @@ def get_chip_capacity_bits(chip_type, tiles=16, xbars=96):
     return info["Size"] * info["Bits/cell"] * xbars * tiles
 
 # -----------------------------------------------------------------------------
+# getOUSize implementation for optimal crossbar dimensions
+# -----------------------------------------------------------------------------
+def getOUSize(xbar_sparsity, num_xbars, chiplet_type, weight_bits):
+    """
+    Determines optimal crossbar dimensions (row/col size) that minimizes EDP and peak power
+    while meeting activation sparsity requirements.
+    
+    Args:
+        xbar_sparsity: Effective crossbar sparsity (IS + WS) / num_xbars
+        num_xbars: Number of crossbars required for the layer
+        chiplet_type: Type of chiplet ("Standard", "Shared", etc.)
+        weight_bits: Total weight bits required for the layer
+        
+    Returns:
+        (optimal_row_size, optimal_col_size, scaled_tops, scaled_energy_per_mac)
+    """
+    # Get chiplet specs from pim_scaling module
+    spec = chiplet_specs[chiplet_type]
+    base_r, base_c = spec["base"]
+    base_tops = spec["tops"]
+    base_energy_per_mac = spec["energy_per_mac"]
+    
+    # Scaling factors to search through
+    scales = [1.0, 0.5, 0.25, 0.125]
+    
+    # Track best configuration
+    best_config = None
+    best_weighted_metric = float('inf')  # Lower is better
+    
+    # Weight factors for multi-objective optimization (can be adjusted)
+    edp_weight = 0.7  # Higher priority on EDP
+    power_weight = 0.3  # Lower priority on power
+    
+    for r_scale in scales:
+        for c_scale in scales:
+            # Calculate scaled dimensions
+            r = int(base_r * r_scale)
+            c = int(base_c * c_scale)
+            
+            # Skip if total cells are less than needed based on sparsity
+            required_cells = (1 - xbar_sparsity) * base_r * base_c
+            if r * c < required_cells:
+                continue
+            
+            # Calculate energy scaling based on row and column scaling
+            rowE = spec["rowKnob"] * r_scale
+            colE = spec["colKnob"] * c_scale
+            otherE = 100 - spec["rowKnob"] - spec["colKnob"]
+            energy_ratio = (rowE + colE + otherE) / 100
+            scaled_energy = base_energy_per_mac * energy_ratio
+            
+            # Calculate TOPS scaling
+            scaled_tops = base_tops * (r_scale * c_scale)
+            tops_ops = scaled_tops * 1e12  # Convert to ops/s
+            
+            # Calculate peak power and EDP
+            peak_power = scaled_energy * tops_ops  # Watts
+            edp = scaled_energy / tops_ops if tops_ops > 0 else float('inf')  # J*s per MAC²
+            
+            # Combined weighted metric - normalize by base values for fair comparison
+            weighted_metric = (edp_weight * edp / (base_energy_per_mac / (base_tops * 1e12))) + \
+                             (power_weight * peak_power / (base_energy_per_mac * base_tops * 1e12))
+            
+            # Update best configuration if better
+            if weighted_metric < best_weighted_metric:
+                best_weighted_metric = weighted_metric
+                best_config = (r, c, scaled_tops, scaled_energy)
+    
+    if best_config is None:
+        # Fallback to base configuration if no valid configuration found
+        return base_r, base_c, base_tops, base_energy_per_mac
+    
+    return best_config
+
+# -----------------------------------------------------------------------------
 # New helper: per‑layer time/energy/power from your allocation
 # -----------------------------------------------------------------------------
 def compute_layer_time_energy(allocation_list, total_macs):
@@ -65,11 +152,20 @@ def compute_layer_time_energy(allocation_list, total_macs):
     for a in allocation_list:
         frac = a["allocated_bits"] / total_bits
         macs_i = total_macs * frac
-        spec = chipletTypesDict[a["chip_type"]]
+        
+        # Use optimized TOPS and Energy/MAC values if available in allocation
+        if "optimized_tops" in a and "optimized_energy_per_mac" in a:
+            tops_i = a["optimized_tops"] * 1e12  # Convert to ops/sec
+            energy_per_mac_i = a["optimized_energy_per_mac"]
+        else:
+            # Use default values from chiplet specs
+            spec = chipletTypesDict[a["chip_type"]]
+            tops_i = spec["TOPS"]
+            energy_per_mac_i = spec["Energy/MAC"]
 
-        t_i = macs_i / spec["TOPS"]
-        e_i = macs_i * spec["Energy/MAC"]
-        edp_i = macs_i**2 * spec["Energy/MAC"]/(spec["TOPS"])
+        t_i = macs_i / tops_i
+        e_i = macs_i * energy_per_mac_i
+        edp_i = macs_i**2 * energy_per_mac_i/(tops_i)
 
         per_chip_times.append(t_i)
         per_chip_energies.append(e_i)
@@ -84,6 +180,7 @@ def compute_layer_time_energy(allocation_list, total_macs):
     # EDP
     layer_edp = sum(per_chip_edp)
     return layer_time, layer_energy, layer_power, layer_edp
+
 # -----------------------------------------------------------------------------
 # Scheduler function
 # -----------------------------------------------------------------------------
@@ -136,47 +233,55 @@ def scheduler(csv_path, chip_distribution):
 
             # allocate as much as we can on this chip
             alloc = min(remaining_bits, chip["capacity_left"])
+            
             # check how much percentage of the chiplet this layer is taking up. 
             # get the weight requirement per layer using the df in bits
             weightReq = row["Weights(KB)"] * 1024 * 8 
+            
             # find the requied number of crossbars (n) required per layer 
             specName = chip["type"]
             spec = chipletTypesDict[specName]
             specSize = spec["Size"] * spec["Bits/cell"]
             XbarReqDecimal = weightReq / specSize
             XbarReqCeil = math.ceil(XbarReqDecimal)
-            # if standard, 
-            # Xbar_num(n) = weight * 1024*8 / (128X128*2)
+            
             # get the inherent sparsity (IS) by using formula: (ceil(n) - n)/ceil(n)
             inherentSparsityMapped = (XbarReqCeil - XbarReqDecimal) / XbarReqCeil
             # get the weight sparsity (WS) amount by the df for that layer. 
-            weightSparsity = row["Weight_Sparsity(0-1)"]
-            # get effective crossbar (Xbar) percentage using formula: (IS + WS)/(ceil(n))
-            XbarSparsity = (inherentSparsityMapped + weightSparsity) / XbarReqCeil
-
-            optimal_ou_row, optimal_ou_col, optimal_tops, optimal_energy_per_mac = getOUSize(XbarSparsity, XbarReqCeil, specName, weightReq)
-            # We need to use the pim_scaling.py code to get the optimal row and column size for the crossbar in the method.
-            # Depending on the size what is the best row and column size to use which minimizes EDP.
-            # Given per crossbar sparsity, search over different OU sizes(R, C) 
-            # For instance, L1 has 24.2% sparsity per crossbar, there are 4 Xbar
-            # then starting with 128X128, what should be Row/Col size? we get from func f2
-            # f2 takes chiplet type, effective bits required (effective bits = consider WS, IS and compute what bits needed for the layer)
-            # it outputs R, C, Energy/MAC, TOPS and then we use it in computing latency, energy
-            
+            weightSparsity_per_Xbar = row["Weight_Sparsity(0-1)"] / XbarReqCeil
+            # print(weightSparsity_per_Xbar)
+            # get effective crossbar (Xbar) percentage using formula: IS + (WS)/(ceil(n))
+            XbarSparsity = (inherentSparsityMapped + weightSparsity_per_Xbar)
+            # Get optimal crossbar dimensions and performance metrics
+            ActivationSparsity = row["Activation_Sparsity(0-1)"]
+            optimal_ou_row, optimal_ou_col, optimal_tops, optimal_energy_per_mac = getOUSize(
+                XbarSparsity, 
+                XbarReqCeil, 
+                specName, 
+                weightReq
+            )
 
             if remaining_bits > chip["capacity_left"]:
                 util = 1
             else:
                 util = remaining_bits/chip["capacity_left"]
+            
             chip["capacity_left"] -= alloc
-            remaining_bits          -= alloc
+            remaining_bits -= alloc
 
             allocations.append({
-                "chip_id":       chip["id"],
-                "chip_type":     chip["type"],
+                "chip_id": chip["id"],
+                "chip_type": chip["type"],
                 "allocated_bits": int(alloc),
                 "utilization": util,
-                "Crossbar Sparsity": XbarSparsity
+                "Crossbar_used": XbarReqCeil,
+                "Crossbar Sparsity": XbarSparsity,
+                "Activation Sparsity": ActivationSparsity,
+                "optimal_ou_row": optimal_ou_row,
+                "optimal_ou_col": optimal_ou_col,
+                "optimized_tops": optimal_tops,
+                "optimized_energy_per_mac": optimal_energy_per_mac
+
             })
             used_chip_order.append(chip["id"])
 
@@ -186,7 +291,7 @@ def scheduler(csv_path, chip_distribution):
         t, e, p, edp = compute_layer_time_energy(allocations, row["MACs"])
 
         layer_allocations.append({
-            "layer":       layer_id,
+            "layer": layer_id,
             "allocations": allocations,
             "time_s": t,
             "energy_J": e,
