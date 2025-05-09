@@ -10,7 +10,7 @@ chiplet_specs = {
     "Shared":      {"base": (764, 764), "rowKnob": 68.0, "colKnob": 1.3,  "tops": 27.0, "energy_per_mac": 0.30e-12},
     "Adder":       {"base": (64,  64),  "rowKnob": 81.0, "colKnob": 0.4,  "tops": 11.0, "energy_per_mac": 0.18e-12},
     "Accumulator": {"base": (256, 256),"rowKnob": 55.0, "colKnob": 51.0, "tops": 35.0, "energy_per_mac": 0.22e-12},
-    "ADC_Less":    {"base": (128, 128),"rowKnob": 94.4, "colKnob": 20.0, "tops": 3.8,  "energy_per_mac": 0.27e-12},
+    "ADC_Less":    {"base": (128, 128),"rowKnob": 64.4, "colKnob": 20.0, "tops": 3.8,  "energy_per_mac": 0.27e-12},
 }
 
 # -----------------------------------------------------------------------------
@@ -18,10 +18,10 @@ chiplet_specs = {
 # -----------------------------------------------------------------------------
 chipletTypesDict = {
     "Standard":    {"Size": 16384,  "Bits/cell": 2, "TOPS": 30e12,  "Energy/MAC": 0.87e-12},
-    "Shared":      {"Size": 583696, "Bits/cell": 1, "TOPS": 27e12,  "Energy/MAC": 0.30e-12},
+    "Shared":      {"Size": 583696, "Bits/cell": 1, "TOPS": 6.75e12,  "Energy/MAC": 0.30e-12},
     "Adder":       {"Size": 4096,   "Bits/cell": 1, "TOPS": 11e12,  "Energy/MAC": 0.18e-12},
     "Accumulator": {"Size": 65536,  "Bits/cell": 2, "TOPS": 35e12,  "Energy/MAC": 0.22e-12},
-    "ADC_Less":    {"Size": 16384,  "Bits/cell": 1, "TOPS": 3.8e12, "Energy/MAC": 0.27e-12},
+    "ADC_Less":    {"Size": 163840,  "Bits/cell": 1, "TOPS": 3.8e12, "Energy/MAC": 0.27e-12},
 }
 
 XBARS_PER_TILE = 96
@@ -37,7 +37,6 @@ def calculate_chiplets_needed(weight_bits, chiplet_type):
     xbar_capacity = info["Size"] * info["Bits/cell"]
     xbars_needed = math.ceil(weight_bits / xbar_capacity)
     return max(1, math.ceil(xbars_needed / (TILES_PER_CHIPLET * XBARS_PER_TILE)))
-
 # -----------------------------------------------------------------------------
 # getOUSize: finds best crossbar dims under 8 W instantaneous peak power
 # -----------------------------------------------------------------------------
@@ -142,7 +141,6 @@ def _getOUSize_manual(xbar_sparsity, num_xbars, chiplet_type, weight_bits, activ
     scales = [1.0, 0.9, 0.75, 0.5, 0.25, 0.125, 0.0675]
     best = None
     best_metric = float('inf')
-
     for rs in scales:
         for cs in scales:
             r, c = int(base_r*rs), int(base_c*cs)
@@ -203,7 +201,6 @@ def scheduler(csv_path, chip_distribution):
         for i in range(cnt):
             inv.append({"id":f"{ct}_{i}", "type":ct,
                         "capacity_left":get_chip_capacity_bits(ct)})
-
     layers = []
     for _, row in df.iterrows():
         layer_id     = int(row["Layer #"])
@@ -214,8 +211,6 @@ def scheduler(csv_path, chip_distribution):
         for chip in inv:
             if rem_bits <= 0: break
             if chip["capacity_left"] <= 0: continue
-
-
             alloc = min(rem_bits, chip["capacity_left"])
             # weightReq    = row["Weights(KB)"]*1024*8
             # cap          = chipletTypesDict[chip["type"]]["Size"]*chipletTypesDict[chip["type"]]["Bits/cell"]
@@ -287,7 +282,7 @@ def scheduler(csv_path, chip_distribution):
 
 if __name__ == "__main__":
     workload_csv = "workloads/vgg16_stats.csv"
-    chip_dist    = [0, 0, 0, 38, 12]
+    chip_dist    = [1230, 0, 0, 0, 0, 10000]# hetOU
     results      = scheduler(workload_csv, chip_dist)
 
     # per-layer details
