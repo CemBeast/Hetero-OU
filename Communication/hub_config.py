@@ -1,0 +1,13 @@
+{
+    "subgraph_size": 4,
+    "intra_subgraph_freq_ghz": 2.0,
+    "inter_subgraph_freq_ghz": 1.15,
+    "intra_subgraph_energy_pj_bit": 10.0,
+    "inter_subgraph_energy_pj_bit": 50.0,
+    "packet_size_bytes": 32,
+    "packets_per_node": 100000,
+    "buffer_size": 4,
+    "hub_node_subgraph1": [1, 2],
+    "hub_node_subgraph2": [1, 2],
+    "communication_pattern": "broadcast"
+}
