@@ -670,6 +670,7 @@ def simulate_activations_between_layers(workload, results, G, params):
         dst_chiplets = layer_to_chiplets.get(dst_layer, [])
 
         # Check for intra-chiplet comm
+        
         common_chiplets = set(src_chiplets) & set(dst_chiplets)
         for chip in common_chiplets:
             print(f"🧠 NoC Transfer on {chip}: L{src_layer} → L{dst_layer}")
@@ -722,7 +723,7 @@ if __name__ == "__main__":
         { "layer": int(row["Layer #"]), "activations_kb": float(row["Activations(KB)"]) }
         for _, row in df.iterrows()
     ]
-    chip_dist    = [0, 0, 0, 0, 100]# hetOU
+    chip_dist    = [100, 0, 0, 0, 0]# hetOU
     results      = scheduler(workload_csv, chip_dist)
 
     # per-layer details
@@ -790,7 +791,7 @@ if __name__ == "__main__":
         print(f"Topology: {t}")
         logs = simulate_activations_between_layers(workload, results, G, params)
         for log in logs:
-            print(f"L{log['src_layer']} → L{log['dst_layer']}, {log['src_chiplet']} → {log['dst_chiplet']}, {log['hops']} hops, {log['energy_joules']:.2e} J")
+            print(f"L{log['src_layer']} → L{log['dst_layer']}, {log['src_chiplet']} → {log['dst_chiplet']}, {log['activations_kb']} KBs,{log['hops']} hops, {log['energy_joules']:.2e} J")
             total_hops       += log["hops"]
             total_latency_ns += log["latency_ns"]
             total_cycles     += log["cycles"]
