@@ -177,7 +177,7 @@ def analyze_model(name, model_fn, threshold=1e-3):
     print(f"Total activations (float64): {total_activations_kb:.2f} KB")
     print(f"Total MACs: {total_macs:,}")
     print(f"Average weight sparsity: {avg_weight_sparsity*100:.4f}%")
-    print(f"Average activation sparsity: {avg_act_sparsity*100:.4f}%")
+    print(f"Average activation sparsity: {avg_act_sparsity*100:.6f}%")
 
     # Display the results
     print("\nLayer statistics:")
@@ -187,10 +187,10 @@ def analyze_model(name, model_fn, threshold=1e-3):
 
 # List of models to extract info on
 models_to_run = {
-    "VGG16": models.vgg16_bn,
-    "ResNet18": models.resnet18,
-    "DenseNet121": models.densenet121,
-    "MobileNetV2": models.mobilenet_v2,
+    "VGG19":     models.vgg19_bn,
+    "ResNet50":  models.resnet50,
+    "ResNet101": models.resnet101,
+    "ResNet152": models.resnet152,
 }
 
 # Saves each models stats within the workload folder

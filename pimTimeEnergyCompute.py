@@ -265,8 +265,8 @@ def runHeterogeneousWorkload(csvPath, chipletCounts, chipletDict):
 
 
 
-chipCounts = [24, 28, 0, 18, 12]  # Standard, Shared, Adder, Accumulator, ADC_Less
-runHeterogeneousWorkload("workload.csv", chipCounts, chipletTypesDict)
+# chipCounts = [24, 28, 0, 18, 12]  # Standard, Shared, Adder, Accumulator, ADC_Less
+# runHeterogeneousWorkload("workload.csv", chipCounts, chipletTypesDict)
 
 def runHeterogeneousWorkload2(csvPath, chipletCounts, chipletDict):
     chipletNames = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
@@ -498,3 +498,5 @@ def runHeterogeneousWorkloadFromKB(csvPath, chipletCounts, chipletDict):
 csvPath = "workloads/vgg16_stats.csv"
 chipCounts = [24, 28, 0, 18, 12]  # Standard, Shared, Adder, Accumulator, ADC_Less
 runHeterogeneousWorkloadFromKB(csvPath, chipCounts, chipletTypesDict)
+
+runHeterogeneousWorkloadFromKB("junk", chipCounts, chipletTypesDict)

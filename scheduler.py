@@ -141,22 +141,20 @@ def scheduler(csv_path, chip_distribution):
             weightReq = row["Weights(KB)"] * 1024 * 8 
             # find the requied number of crossbars (n) required per layer 
             specName = chip["type"]
+            # if standard, 
             spec = chipletTypesDict[specName]
             specSize = spec["Size"] * spec["Bits/cell"]
-            XbarReqDecimal = weightReq / specSize
-            XbarReqCeil = math.ceil(XbarReqDecimal)
-            # if standard, 
             # Xbar_num(n) = weight * 1024*8 / (128X128*2)
             # get the inherent sparsity (IS) by using formula: (ceil(n) - n)/ceil(n)
+            XbarReqDecimal = weightReq / specSize
+            XbarReqCeil = math.ceil(XbarReqDecimal)
             inherentSparsityMapped = (XbarReqCeil - XbarReqDecimal) / XbarReqCeil
             # get the weight sparsity (WS) amount by the df for that layer. 
             weightSparsity = row["Weight_Sparsity(0-1)"]
             # get effective crossbar (Xbar) percentage using formula: (IS + WS)/(ceil(n))
             XbarSparsity = (inherentSparsityMapped + weightSparsity) / XbarReqCeil
 
-            optimal_ou_row, optimal_ou_col, optimal_tops, optimal_energy_per_mac = getOUSize(XbarSparsity, XbarReqCeil, specName, weightReq)
-            # We need to use the pim_scaling.py code to get the optimal row and column size for the crossbar in the method.
-            # Depending on the size what is the best row and column size to use which minimizes EDP.
+            # TODO
             # Given per crossbar sparsity, search over different OU sizes(R, C) 
             # For instance, L1 has 24.2% sparsity per crossbar, there are 4 Xbar
             # then starting with 128X128, what should be Row/Col size? we get from func f2
