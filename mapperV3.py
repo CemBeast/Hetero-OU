@@ -4,6 +4,7 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 import os
+import Floret
 from collections import defaultdict
 from matplotlib.patches import FancyArrowPatch
 
@@ -466,10 +467,13 @@ def buildHexaMeshGraph(rows, cols):
 
     return G
 
-
 # --- MAIN BUILDER ---
 
 def build_chiplet_mesh(results, topology="mesh"):
+    if topology == "floret":
+        G, chiplet_name_map, label_map, lam, psi = Floret.build_floret_graph_from_results(results)
+        return G, chiplet_name_map, label_map, lam, psi
+    
     chiplet_to_layers = defaultdict(list)
 
     # Step 1: Map each chiplet to all layers that used it
@@ -532,18 +536,9 @@ def getHexPositions(rows, cols, spacing=1.0):
             pos[(i, j)] = (x, y)
     return pos
 
-def getKitePositions(rows, cols, spacing=2.0):
-    pos = {}
-    for i in range(rows):
-        for j in range(cols):
-            x = j * spacing + (spacing / 2 if i % 2 else 0)
-            y = -i * spacing + (spacing / 2 if j % 2 else 0)
-            pos[(i, j)] = (x, y)
-    return pos
-
 # --- PLOTTING ---
 
-def plot_chiplet_mesh(G, pos, labels, topology="mesh"):
+def plot_chiplet_mesh(G, pos, labels, topology="mesh", lam=None, psi=None):
     output_dir = "WorkloadLayerMappingImages"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -554,6 +549,12 @@ def plot_chiplet_mesh(G, pos, labels, topology="mesh"):
     if topology == "kite":
         fig, ax = draw_curved_graph(G, pos, labels, rad=0.2)
         fig.savefig(filename, bbox_inches='tight')
+    elif topology == "floret":
+        if lam is None or psi is None:
+            raise ValueError("lam and psi must be provided for floret topology.")
+        Floret.display_floret_graph(G, pos, labels, lam, psi, show=False) 
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
     else:
         plt.figure(figsize=(10, 7))
         nx.draw(G, pos, with_labels=True, labels=labels,
@@ -750,9 +751,10 @@ if __name__ == "__main__":
     
     # getLayerStats()
     topologies = [
-        "kite",
-        "mesh",
-        "hexa"
+        # "kite",
+        # "mesh",
+        # "hexa",
+        "floret"
     ]
 
     params = {
@@ -768,19 +770,14 @@ if __name__ == "__main__":
     }
 
     for t in topologies:
-        G, pos_map, layers_map = build_chiplet_mesh(results, topology=t)
-
-        # ##### To save the image we use the function below #####
-        # # plot_chiplet_mesh(G, pos_map, layers_map, topology=t)
-
-        ## Testing coms for one packet from src to dst node
-        # chiplet_ids = list(G.nodes)
-        # print(chiplet_ids)
-        # src = chiplet_ids[0]
-        # dst = chiplet_ids[-1]
-        # print(f"\n🕸 Topology: {t.upper()}")
-        # simulate_packet_transfer_graph(G, src, dst, params)
-
+        result = build_chiplet_mesh(results, topology=t)
+        if t == "floret":
+            G, pos, labels, lam, psi = result
+            plot_chiplet_mesh(G, pos, labels, topology=t, lam=lam, psi=psi)
+        else:
+            G, pos, labels = result
+            plot_chiplet_mesh(G, pos, labels, topology=t)
+        
         # Initialize totals
         total_hops = 0
         total_latency_ns = 0

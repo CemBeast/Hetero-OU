@@ -321,6 +321,32 @@ def simulate_packet_transfer_graph(G, src, dst, params):
         "time_per_packet_s": time_per_packet_s
     }
 
+# ------------ DFS -------------
+def dfs_all_paths(G, start, goal, path=None, visited=None):
+    if path is None:
+        path = [start]
+    if visited is None:
+        visited = set()
+
+    visited.add(start)
+
+    if start == goal:
+        return [path]
+
+    paths = []
+    for neighbor in G.neighbors(start):
+        if neighbor not in visited:
+            new_paths = dfs_all_paths(G, neighbor, goal, path + [neighbor], visited.copy())
+            paths.extend(new_paths)
+
+    return paths
+
+def dfs_shortest_path(G, start, goal):
+    all_paths = dfs_all_paths(G, start, goal)
+    if not all_paths:
+        return None
+    return min(all_paths, key=len)
+
 if __name__ == "__main__":
     params = {
     "noc_hops_latency_ns": 1,
