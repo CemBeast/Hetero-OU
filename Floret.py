@@ -47,7 +47,7 @@ def build_floret_graph(rows, cols, lam, psi, workload):
     arr_list = [all_nodes[i * psi: (i + 1) * psi] for i in range(lam)]
     arr = np.array(arr_list, dtype=object)
 
-    DG = nx.DiGraph()
+    G = nx.Graph()
     node_labels = {}
 
     layer_names = list(workload.keys())
@@ -67,18 +67,20 @@ def build_floret_graph(rows, cols, lam, psi, workload):
             j += size
             layer_idx += 1
 
+    # Connect all nodes in each SFC
     for i in range(lam):
         for j in range(psi - 1):
-            DG.add_edge(tuple(arr[i][j]), tuple(arr[i][j + 1]))
+            G.add_edge(tuple(arr[i][j]), tuple(arr[i][j + 1]))
+    # Connect head and tail of that SFC
     for i in range(lam):
         head, tail = tuple(arr[i][0]), tuple(arr[i][-1])
-        DG.add_edge(head, tail)
-        DG.add_edge(tail, head)
+        G.add_edge(head, tail)
+    # Connect tail of one SFC to head of the next
     for i in range(lam - 1):
-        DG.add_edge(tuple(arr[i][-1]), tuple(arr[i + 1][0]))
-    DG.add_edge(tuple(arr[-1][-1]), tuple(arr[0][0]))
+        G.add_edge(tuple(arr[i][-1]), tuple(arr[i + 1][0]))
+    G.add_edge(tuple(arr[-1][-1]), tuple(arr[0][0]))
 
-    return DG, arr, pos, node_labels
+    return G, arr, pos, node_labels
 
 def display_floret_graph(DG, pos, label_map, lam, psi, show=True):
     plt.figure(figsize=(9, 9))
@@ -103,6 +105,7 @@ def display_floret_graph(DG, pos, label_map, lam, psi, show=True):
 
     # Labels
     nx.draw_networkx_labels(DG, pos, labels=label_map, font_size=8, font_color="white")
+    nx.draw_networkx_edges(DG, pos, edgelist=DG.edges(), edge_color="gray", style="solid", alpha=0.3)
 
     plt.title("Floret SFCs with Layer Labels")
     plt.axis("off")
@@ -133,7 +136,7 @@ def build_floret_graph_from_results(results):
     arr = [row for row in arr_list]
     arr = [list(map(tuple, row)) for row in arr]
 
-    DG = nx.DiGraph()
+    G = nx.Graph()
     node_labels = {}
 
     # Step 3: Map chiplet names to grid positions
@@ -148,24 +151,37 @@ def build_floret_graph_from_results(results):
                 chiplet_name_map[chiplet] = pos[(x, y)]
                 i += 1
 
-    # Step 4: Build floret links and label nodes
+    # Step 4: Build floret links and label nodes for each SFC
     for i in range(lam):
         for j in range(psi - 1):
-            DG.add_edge(mapping[(i, j)], mapping[(i, j + 1)])
+            G.add_edge(mapping[(i, j)], mapping[(i, j + 1)])
         # Head-tail loop
-        DG.add_edge(mapping[(i, 0)], mapping[(i, psi - 1)])
-        DG.add_edge(mapping[(i, psi - 1)], mapping[(i, 0)])
+        G.add_edge(mapping[(i, 0)], mapping[(i, psi - 1)])
+        # G.add_edge(mapping[(i, psi - 1)], mapping[(i, 0)])
 
+    # Connect Tail of one SFC to the head of the next
     for i in range(lam - 1):
-        DG.add_edge(mapping[(i, psi - 1)], mapping[(i + 1, 0)])
-    DG.add_edge(mapping[(lam - 1, psi - 1)], mapping[(0, 0)])
+        G.add_edge(mapping[(i, psi - 1)], mapping[(i + 1, 0)])
+
+    G.add_edge(mapping[(lam - 1, psi - 1)], mapping[(0, 0)])
+
+    # # Connect each SFC head to all other SFCs
+    # # Now collect every head‐node (the “head” of each SFC row is at column 0)
+    # heads = [ mapping[(i, 0)] for i in range(lam) ]
+    # # (every head connects bidirectionally to every other head)
+    # for idx_a in range(len(heads)):
+    #     for idx_b in range(idx_a+1, len(heads)):
+    #         a = heads[idx_a]
+    #         b = heads[idx_b]
+    #         G.add_edge(a, b)
+    #         G.add_edge(b, a)
 
     # Step 5: Format labels
     label_map = {}
     for chiplet, layers in chiplet_to_layers.items():
         label_map[chiplet] = f"{chiplet}\nL{','.join(map(str, layers))}"
 
-    return DG, chiplet_name_map, label_map, lam, psi
+    return G, chiplet_name_map, label_map, lam, psi
 
 if __name__ == "__main__":
     params = {
