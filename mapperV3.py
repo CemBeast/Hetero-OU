@@ -724,7 +724,7 @@ if __name__ == "__main__":
         { "layer": int(row["Layer #"]), "activations_kb": float(row["Activations(KB)"]) }
         for _, row in df.iterrows()
     ]
-    chip_dist    = [100, 0, 0, 0, 0]# hetOU
+    chip_dist    = [0, 0, 0, 0, 100]# hetOU
     results      = scheduler(workload_csv, chip_dist)
 
     # per-layer details
@@ -753,7 +753,7 @@ if __name__ == "__main__":
     topologies = [
         # "kite",
         # "mesh",
-        # "hexa",
+        "hexa",
         "floret"
     ]
 
