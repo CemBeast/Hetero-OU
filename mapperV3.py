@@ -5,8 +5,10 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import os
 import Floret
+import topologyComparison
 from collections import defaultdict
 from matplotlib.patches import FancyArrowPatch
+
 
 # -----------------------------------------------------------------------------
 # Chiplet specs with TOPS (in Tera‑ops/s) and energy_per_mac (in J)
@@ -340,7 +342,6 @@ def extract_layer_summary(csv_path, chip_distribution):
     slowest_layer = int(df_summary.loc[df_summary["Time_s"].idxmax(), "Layer"])
 
     # 5) total workload EDP
-    total_energy = sum(l["energy_J"] for l in layers)
     max_latency  = max(l["time_s"]   for l in layers)
     total_energy = sum(l["energy_J"] for l in layers)
     workload_edp = total_energy * max_latency
@@ -365,14 +366,14 @@ def extract_layer_summary(csv_path, chip_distribution):
 def getLayerStats():
 # list all of your model CSVs here
     workloads = [
-        "workloads/vgg16_stats.csv"
-        "workloads/vgg19_stats.csv",
-        "workloads/resnet18_stats.csv",
-        "workloads/resnet50_stats.csv",
-        "workloads/resnet101_stats.csv",
+        "workloads/vgg16_stats.csv" # Only work with vgg16 for now
+        # "workloads/vgg19_stats.csv",
+        # "workloads/resnet18_stats.csv",
+        # "workloads/resnet50_stats.csv",
+        # "workloads/resnet101_stats.csv",
     ]
     # choose your chip distribution
-    chip_dist = [0, 5, 0, 0, 0]
+    chip_dist = [100, 0, 0, 0, 0]
 
     for wl in workloads:
         df_sum, slow, w_edp, n_chips, total_energy, max_latency = extract_layer_summary(wl, chip_dist)
@@ -380,9 +381,9 @@ def getLayerStats():
         print(df_sum.to_string(index=False))
         print(f"Distinct chips used: {n_chips}")
         print(f"Layer taking longest: {slow}")
-        print(f"Final energy : {total_energy:.3e} J")
-        print(f"Final latency: {max_latency:.3e} s")
-        print(f"Final EDP: {w_edp:.3e} J·s")
+        print(f"Final compute energy : {total_energy:.3e} J")
+        print(f"Final compute latency: {max_latency:.3e} s")
+        print(f"Final compute EDP: {w_edp:.3e} J·s")
 
 # --- UTILITIES ---
 
@@ -426,9 +427,9 @@ def buildKiteGraph(rows, cols):
         for j in range(cols):
             G.add_node((i, j))
             if i + 2 < rows:
-                G.add_edge((i, j), (i + 2, j))
+                G.add_edge((i, j), (i + 2, j), weight=2)
             if j + 2 < cols:
-                G.add_edge((i, j), (i, j + 2))
+                G.add_edge((i, j), (i, j + 2), weight=2)
 
     for i in range(rows):
         for j in range(cols):
@@ -460,10 +461,10 @@ def buildHexaMeshGraph(rows, cols):
                 G.add_edge((i, j), (i, j + 1))
             # Bottom-right neighbor
             if i + 1 < rows and (j + (0 if even_row else 1)) < cols:
-                G.add_edge((i, j), (i + 1, j + (0 if even_row else 1)))
+                G.add_edge((i, j), (i + 1, j + (0 if even_row else 1)), weight=2)
             # Bottom-left neighbor
             if i + 1 < rows and (j - (1 if even_row else 0)) >= 0:
-                G.add_edge((i, j), (i + 1, j - (1 if even_row else 0)))
+                G.add_edge((i, j), (i + 1, j - (1 if even_row else 0)), weight=2)
 
     return G
 
@@ -498,6 +499,9 @@ def build_chiplet_mesh(results, topology="mesh"):
     elif topology == "hexa":
         G = buildHexaMeshGraph(rows, cols)
         pos_func = getHexPositions
+    elif topology == "sfc":
+        G = topologyComparison.build_SFC_graph(rows, cols)
+        pos_func = get_grid_positions
     else:
         raise ValueError(f"Unsupported topology type: {topology}")
     
@@ -566,7 +570,7 @@ def plot_chiplet_mesh(G, pos, labels, topology="mesh", lam=None, psi=None):
     #plt.show()
 
 
-def draw_curved_graph(G, pos, labels, rad=0.2):
+def draw_curved_graph(G, pos, labels, rad=0.2, title: str = None):
     fig, ax = plt.subplots(figsize=(10, 7))
 
     # Draw nodes and labels
@@ -585,7 +589,10 @@ def draw_curved_graph(G, pos, labels, rad=0.2):
                                 linewidth=1)
         ax.add_patch(arrow)
 
-    ax.set_title("Kite Layout with Layer Assignments")
+    # Use the caller’s title, or no title at all
+    if title is not None:
+        ax.set_title(title)
+
     ax.set_aspect('equal')
     ax.axis('off')
     plt.tight_layout()
@@ -597,8 +604,10 @@ def simulate_packet_transfer_graph(G, src, dst, params):
     Simulates packet transfer over a single-level graph topology (e.g. mesh, kite, hexamesh).
     Assumes every hop is an interposer-level (NoI) hop.
     """
-    path = nx.shortest_path(G, source=src, target=dst)
-    num_hops = len(path) - 1
+    path = nx.shortest_path(G, source=src, target=dst, weight="weight")
+    raw_hops = len(path) - 1
+    weighted_hops = sum(G[path[i]][path[i+1]].get("weight", 1) for i in range(len(path) - 1))
+
     packet_bits = params["packet_size_bytes"] * 8
 
     latency_per_hop_ns = params["noi_hops_latency_ns"]
@@ -606,15 +615,16 @@ def simulate_packet_transfer_graph(G, src, dst, params):
     bandwidth_bps = params["noi_bandwidth_bits_per_sec"]
     frequency = params["freq_inter_hz"]
 
-    total_latency_ns = num_hops * latency_per_hop_ns
-    total_energy = num_hops * packet_bits * energy_per_bit
+    total_latency_ns = weighted_hops * latency_per_hop_ns
+    total_energy = weighted_hops * packet_bits * energy_per_bit
     total_cycles = int(total_latency_ns * frequency * 1e-9)
     edp = total_energy * total_latency_ns
 
-    time_per_packet_s = (packet_bits * num_hops) / bandwidth_bps
+    time_per_packet_s = (packet_bits * weighted_hops) / bandwidth_bps
 
     print(f"Path: {path}")
-    print(f"Total Hops: {num_hops}")
+    print(f"Total Hops: {raw_hops}")
+    print(f"Weighted Hops: {weighted_hops}")
     print(f"Latency: {total_latency_ns} ns ({total_cycles} cycles)")
     print(f"Energy: {total_energy:.2e} J")
     print(f"EDP: {edp:.2e} J·ns")
@@ -622,17 +632,14 @@ def simulate_packet_transfer_graph(G, src, dst, params):
 
     return {
         "path": path,
-        "hops": num_hops,
+        "hops": raw_hops,
+        "weighted_hops": weighted_hops,
         "latency_ns": total_latency_ns,
         "energy_joules": total_energy,
         "cycles": total_cycles,
         "edp": edp,
         "time_per_packet_s": time_per_packet_s
     }
-
-
-from collections import defaultdict
-import networkx as nx
 
 def simulate_activations_between_layers(workload, results, G, params):
     """
@@ -670,6 +677,11 @@ def simulate_activations_between_layers(workload, results, G, params):
         # Get src and dst chiplets to iterate over later
         src_chiplets = layer_to_chiplets.get(src_layer, [])
         dst_chiplets = layer_to_chiplets.get(dst_layer, [])
+        # print("***********************************************")
+        # print(f"Source chiplets for Layer {i}")
+        # print(src_chiplets)
+        # print(f"Destination chiplets for Layer {i+1}")
+        # print(dst_chiplets)
 
         # Check for intra-chiplet comm
         
@@ -688,17 +700,54 @@ def simulate_activations_between_layers(workload, results, G, params):
                     continue
 
                 try:
-                    path = nx.shortest_path(G, source=sc, target=dc)
+                    path = nx.shortest_path(G, source=sc, target=dc, weight="weight")
                 except nx.NetworkXNoPath:
                     print(f"❌ No path from {sc} to {dc}, skipping.")
                     continue
 
-                hops = len(path) - 1
-                latency_ns = hops * params["noi_hops_latency_ns"]
-                energy_j = hops * packet_bits * params["e_cross"]
-                cycles = int(latency_ns * params["freq_inter_hz"] * 1e-9)
-                edp = energy_j * latency_ns
-                time_s = (packet_bits * hops) / params["noi_bandwidth_bits_per_sec"]
+                # both diagonal and direct single hop links exist. Recalculate the number of hops  considering the diagonal link
+                raw_hops = len(path) - 1 # 
+                weighted_hops = sum(G[path[i]][path[i+1]].get("weight",1) for i in range(len(path)-1))
+                # in case of weighted hops, we need to multiply it by the number of packets going over the link.
+                # maintain an array of path. Some path is 1 cycle, some is 2 cycle and so on
+                #if ("Mesh, Kite", k = 32; "Floret", k = 64; "HexaMesh", k = 24)
+                # as the layer is divided on k chiplets; Li+1 is on m chiplets, the packet_bits is also going to scale down to capture that we are now
+                # we are now reducing the number of packet_bits per chiplet where it is divided by k. Hence, packate_bits_new = pscket_bits/k
+                packet_bits_per_chip = packet_bits / len(src_chiplets)
+                
+                # print(f"\n--- Simulation for Layer {src_layer} → {dst_layer} ---")
+                # print(f"Packet bits (per chiplet): {packet_bits_per_chip:.2f} bits")
+                # print(f"Weighted hops: {weighted_hops}")
+                # print(f"Bus width: {params['bus_width']} bits")
+
+                hop_latency_ns = params["noi_hops_latency_ns"]
+                latency_ns = (weighted_hops * hop_latency_ns *(packet_bits_per_chip/(params["bus_width"])))
+                latency_s = latency_ns * 1e-9
+                # Latency based -> cyles till first bit arrives at destination
+                cycles_latency = int(latency_s * params["freq_inter_hz"]) 
+
+                
+                # print(f"Latency-based:")
+                # print(f"  latency_ns = {latency_ns:.4f} ns")
+                # print(f"  latency_s = {latency_s:.6e} s")
+                # print(f"  cycles_latency = {cycles_latency}")
+
+                 
+                bandwidth_bps = params["noi_bandwidth_bits_per_sec"]
+                time_throughput_s = (packet_bits_per_chip * weighted_hops) / bandwidth_bps
+                #throughput based -> how many clock cycles it takes to push ALL the bits through the channel.
+                cycles_throughput = int(time_throughput_s * params["freq_inter_hz"]) 
+                # print(f"Throughput-based:")
+                # print(f"  time_throughput_s = {time_throughput_s:.6e} s")
+                # print(f"  cycles_throughput = {cycles_throughput}")
+
+                cycles = cycles_latency # latency for now, how soon destination is recieving bits
+                
+                energy_j = weighted_hops * packet_bits_per_chip * params["e_cross"]/(params["bus_width"])
+                edp = energy_j * latency_s # J•s
+                # print(f"Energy: {energy_j:.4e} J")
+                # print(f"EDP: {edp:.4e} J·s")
+
 
                 simulation_log.append({
                     "src_layer": src_layer,
@@ -706,12 +755,12 @@ def simulate_activations_between_layers(workload, results, G, params):
                     "src_chiplet": sc,
                     "dst_chiplet": dc,
                     "activations_kb": activations_kb,
-                    "hops": hops,
-                    "latency_ns": latency_ns,
+                    "hops": raw_hops,
+                    "weighted_hops": weighted_hops,
+                    "latency_s": latency_s,
                     "energy_joules": energy_j,
                     "cycles": cycles,
                     "edp": edp,
-                    "time_s": time_s,
                     "path": path
                 })
 
@@ -736,38 +785,57 @@ if __name__ == "__main__":
         print(f"  → Time: {lr['time_s']:.3e}s, Energy: {lr['energy_J']:.3e}J, "
               f"Power: {lr['avg_power_W']:.3e}W, MaxP: {lr['max_chiplet_power_W']:.3e}W, EDP: {lr['edp']:.3e}")
 
-    # global summary
-    total_energy = sum(l["energy_J"] for l in results)
-    max_latency  = max(l["time_s"]   for l in results)
-    workload_edp = total_energy * max_latency
+    # global summary for computation costs
+    compute_energy = sum(l["energy_J"] for l in results)
+    compute_latency  = max(l["time_s"]   for l in results)
+    compute_workload_edp = compute_energy * compute_latency
     print("\nWorkload summary:")
-    print(f"  Final energy : {total_energy:.3e} J")
-    print(f"  Final latency: {max_latency:.3e} s")
-    print(f"  Final EDP    : {workload_edp:.3e} J·s")
+    print(f"  Final Compute energy : {compute_energy:.3e} J")
+    print(f"  Final Compute latency: {compute_latency:.3e} s")
+    print(f"  Final Compute EDP    : {compute_workload_edp:.3e} J·s")
 
     # check violations
     bad = [l["layer"] for l in results if l["max_chiplet_power_W"] > MAX_CHIPLET_POWER]
     if bad:
         print(f"\nWarning: layers {bad} exceed the {MAX_CHIPLET_POWER}W peak‑power cap.")
     
-    # getLayerStats()
+    print("\nGettig layer stats\n")
+    getLayerStats()
     topologies = [
         "kite",
         "mesh",
         "hexa",
-        "floret"
+        "floret",
+        "sfc"
     ]
 
     params = {
     "noc_hops_latency_ns": 1,
-    "noi_hops_latency_ns": 0.8694,  # 1.449 mm × 0.6 ns/mm
+    "noi_hops_latency_ns": 0.8694,  # 1.449 mm × 0.6 ns/mm - 1 hop = this time
     "packet_size_bytes": 64,
     "freq_intra_hz": 2e9,
-    "freq_inter_hz": 1.15e9,
+    "freq_inter_hz": 1.15e9, # consistent / cannot change
     "e_intra": 10e-12,
     "e_cross": 50e-12,
     "noc_bandwidth_bits_per_sec": 32e9,
-    "noi_bandwidth_bits_per_sec": 36.8e9
+    "noi_bandwidth_bits_per_sec": 4.6e9, # Bus width (32) * Frequency / 8 bits
+    "bus_width" : 32
+    }
+
+    bandwidth_scale = {
+    "kite":   1.0,
+    "mesh":   1.0,
+    "hexa":   1/3,
+    "floret": 2.0,
+    "sfc":    2.0
+    }
+
+    buswidth_scale = {
+    "kite":   1.0,
+    "mesh":   1.0,
+    "hexa":   3/4,
+    "floret": 2.0,
+    "sfc":    2.0
     }
 
     for t in topologies:
@@ -781,44 +849,38 @@ if __name__ == "__main__":
         
         # Initialize totals
         total_hops = 0
-        total_latency_ns = 0
+        total_weighted_hops = 0
+        communicate_latency = 0
         total_cycles = 0
-        total_energy = 0.0
-        total_edp = 0.0
+        communicate_energy = 0.0
+
+         # Scale interconnect bandwidth before simulating
+        scaled_params = params.copy()
+        scaled_params["noi_bandwidth_bits_per_sec"] = (params["noi_bandwidth_bits_per_sec"] * bandwidth_scale.get(t, 1.0))
+        scaled_params["bus_width"] = (params["bus_width"] * buswidth_scale.get(t, 1.0))
 
         print(f"Topology: {t}")
-        logs = simulate_activations_between_layers(workload, results, G, params)
+        logs = simulate_activations_between_layers(workload, results, G, scaled_params)
         for log in logs:
             # print(f"L{log['src_layer']} → L{log['dst_layer']}, {log['src_chiplet']} → {log['dst_chiplet']}, {log['activations_kb']} KBs,{log['hops']} hops, {log['energy_joules']:.2e} J")
             total_hops       += log["hops"]
-            total_latency_ns += log["latency_ns"]
+            total_weighted_hops += log["weighted_hops"]
+            communicate_latency += log["latency_s"]
             total_cycles     += log["cycles"]
-            total_energy     += log["energy_joules"]
-            total_edp        += log["edp"]
+            communicate_energy += log["energy_joules"]
 
-        print(f"\n📊 Summary for {t.upper()}:")
-        print(f"Total Hops: {total_hops}")
-        print(f"Latency: {total_latency_ns} ns ({total_cycles} cycles)")
-        print(f"Energy: {total_energy:.2e} J")
-        print(f"EDP: {total_edp:.2e} J·ns")
+        # Communcation costs for each topology
+        print(f"\n📊 Communication Cost Summary for {t.upper()}:")
+        print(f"Latency: {communicate_latency:.2e} s ({total_cycles} cycles)")
+        print(f"Energy: {communicate_energy:.2e} J")
+        print(f"EDP: {(communicate_energy * communicate_latency):.2e} J•s")
+
+        total_energy_combined = communicate_energy + compute_energy
+        total_latency_combined = max(communicate_latency, compute_latency)
+        total_edp_combined = total_energy_combined * total_latency_combined
+        print(f"\n📊 Combined Compute and Communication Cost Summary for {t.upper()}:")
+        print(f"Latency: {total_latency_combined:.2e} s")
+        print(f"Energy: {total_energy_combined:.2e} J")
+        print(f"EDP: {(total_energy_combined * total_latency_combined):.2e} J•s")
 
 
-    
-
-
-
-    # For Kite Test purposes:
-    # G = buildKiteGraph(4, 4)
-    # pos = get_grid_positions(4, 4)
-
-    # src = (0,0)
-    # dst = (3,3)
-
-    # simulate_packet_transfer_graph(G, src, dst, params)
-    # # Draw the graph using your custom curved drawer
-    # fig, ax = draw_curved_graph(G, pos, labels={n: str(n) for n in G.nodes()}, rad=0.25)
-
-    # # Show the plot
-    # plt.show()
-
-  

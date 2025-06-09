@@ -104,7 +104,7 @@ def display_floret_graph(DG, pos, label_map, lam, psi, show=True):
     nx.draw_networkx_edges(DG, pos, edgelist=inter_edges, edge_color='black', style='dashed', arrows=True)
 
     # Labels
-    nx.draw_networkx_labels(DG, pos, labels=label_map, font_size=8, font_color="white")
+    nx.draw_networkx_labels(DG, pos, labels=label_map, font_size=6, font_color="black")
     nx.draw_networkx_edges(DG, pos, edgelist=DG.edges(), edge_color="gray", style="solid", alpha=0.3)
 
     plt.title("Floret SFCs with Layer Labels")
@@ -164,17 +164,6 @@ def build_floret_graph_from_results(results):
         G.add_edge(mapping[(i, psi - 1)], mapping[(i + 1, 0)])
 
     G.add_edge(mapping[(lam - 1, psi - 1)], mapping[(0, 0)])
-
-    # # Connect each SFC head to all other SFCs
-    # # Now collect every head‐node (the “head” of each SFC row is at column 0)
-    # heads = [ mapping[(i, 0)] for i in range(lam) ]
-    # # (every head connects bidirectionally to every other head)
-    # for idx_a in range(len(heads)):
-    #     for idx_b in range(idx_a+1, len(heads)):
-    #         a = heads[idx_a]
-    #         b = heads[idx_b]
-    #         G.add_edge(a, b)
-    #         G.add_edge(b, a)
 
     # Step 5: Format labels
     label_map = {}
