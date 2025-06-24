@@ -424,7 +424,7 @@ def runCustomSim(rows: int, cols: int):
 if __name__ == "__main__":
     params = {
         "noi_hops_latency_ns":       0.8694,
-        "e_cross":                   50e-12,
+        "e_cross":                   50e-12, # energy per bit
         "freq_inter_hz":             1.15e9,
         "noi_bandwidth_bits_per_sec":36.8e9
     }

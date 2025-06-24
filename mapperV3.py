@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import Floret
 import topologyComparison
+import copy
 from collections import defaultdict
 from matplotlib.patches import FancyArrowPatch
 
@@ -26,7 +27,7 @@ chiplet_specs = {
 # -----------------------------------------------------------------------------
 chipletTypesDict = {
     "Standard":    {"Size": 16384,  "Bits/cell": 2, "TOPS": 30e12,  "Energy/MAC": 0.87e-12},
-    "Shared":      {"Size": 583696, "Bits/cell": 1, "TOPS": 6.75e12,  "Energy/MAC": 0.30e-12},
+    "Shared":      {"Size": 583696, "Bits/cell": 1, "TOPS": 27e12,  "Energy/MAC": 0.30e-12},
     "Adder":       {"Size": 4096,   "Bits/cell": 1, "TOPS": 11e12,  "Energy/MAC": 0.18e-12},
     "Accumulator": {"Size": 65536,  "Bits/cell": 2, "TOPS": 35e12,  "Energy/MAC": 0.22e-12},
     "ADC_Less":    {"Size": 163840,  "Bits/cell": 1, "TOPS": 3.8e12, "Energy/MAC": 0.27e-12},
@@ -248,6 +249,14 @@ def scheduler(csv_path, chip_distribution):
                     weight_nonzero_bits,
                     row["Activation_Sparsity(0-1)"]
                 )
+
+            # base values if optimization method is not wanted
+            # r = chiplet_specs[chip["type"]]["base"][0]
+            # c = chiplet_specs[chip["type"]]["base"][1]
+            # tops = chiplet_specs[chip["type"]]["tops"]
+            # epm = chiplet_specs[chip["type"]]["energy_per_mac"]
+            # print(f"Rows: {r}, Cols: {c}, TOPS: {tops}, E/MAC: {epm:.5e} J")
+
             frac        = alloc / total_bits
             macs_assigned = total_macs * frac
             util        = alloc / chip["capacity_left"]
@@ -363,7 +372,7 @@ def extract_layer_summary(csv_path, chip_distribution):
 
     return df_summary, slowest_layer, workload_edp, num_chips_used, total_energy, max_latency
 
-def getLayerStats():
+def getLayerStats(chip_dist):
 # list all of your model CSVs here
     workloads = [
         "workloads/vgg16_stats.csv" # Only work with vgg16 for now
@@ -372,8 +381,6 @@ def getLayerStats():
         # "workloads/resnet50_stats.csv",
         # "workloads/resnet101_stats.csv",
     ]
-    # choose your chip distribution
-    chip_dist = [100, 0, 0, 0, 0]
 
     for wl in workloads:
         df_sum, slow, w_edp, n_chips, total_energy, max_latency = extract_layer_summary(wl, chip_dist)
@@ -381,8 +388,8 @@ def getLayerStats():
         print(df_sum.to_string(index=False))
         print(f"Distinct chips used: {n_chips}")
         print(f"Layer taking longest: {slow}")
-        print(f"Final compute energy : {total_energy:.3e} J")
         print(f"Final compute latency: {max_latency:.3e} s")
+        print(f"Final compute energy : {total_energy:.3e} J")
         print(f"Final compute EDP: {w_edp:.3e} J·s")
 
 # --- UTILITIES ---
@@ -677,14 +684,8 @@ def simulate_activations_between_layers(workload, results, G, params):
         # Get src and dst chiplets to iterate over later
         src_chiplets = layer_to_chiplets.get(src_layer, [])
         dst_chiplets = layer_to_chiplets.get(dst_layer, [])
-        # print("***********************************************")
-        # print(f"Source chiplets for Layer {i}")
-        # print(src_chiplets)
-        # print(f"Destination chiplets for Layer {i+1}")
-        # print(dst_chiplets)
 
-        # Check for intra-chiplet comm
-        
+        # Check for intra-chiplet communication (NoC)
         # common_chiplets = set(src_chiplets) & set(dst_chiplets)
         # for chip in common_chiplets:
         #     print(f"🧠 NoC Transfer on {chip}: L{src_layer} → L{dst_layer}")
@@ -726,13 +727,11 @@ def simulate_activations_between_layers(workload, results, G, params):
                 # Latency based -> cyles till first bit arrives at destination
                 cycles_latency = int(latency_s * params["freq_inter_hz"]) 
 
-                
                 # print(f"Latency-based:")
                 # print(f"  latency_ns = {latency_ns:.4f} ns")
                 # print(f"  latency_s = {latency_s:.6e} s")
                 # print(f"  cycles_latency = {cycles_latency}")
 
-                 
                 bandwidth_bps = params["noi_bandwidth_bits_per_sec"]
                 time_throughput_s = (packet_bits_per_chip * weighted_hops) / bandwidth_bps
                 #throughput based -> how many clock cycles it takes to push ALL the bits through the channel.
@@ -747,7 +746,6 @@ def simulate_activations_between_layers(workload, results, G, params):
                 edp = energy_j * latency_s # J•s
                 # print(f"Energy: {energy_j:.4e} J")
                 # print(f"EDP: {edp:.4e} J·s")
-
 
                 simulation_log.append({
                     "src_layer": src_layer,
@@ -766,6 +764,112 @@ def simulate_activations_between_layers(workload, results, G, params):
 
     return simulation_log
 
+# --- SLACK-AWARE OPTIMIZATION ---
+def optimize_with_slack(results, comm_latency):
+    print("\n🔧 Performing slack-aware optimization to reduce compute energy...")
+    
+    for layer in results:
+        orig_time = layer["time_s"]
+        orig_energy = layer["energy_J"]
+        if orig_time >= comm_latency:
+            continue  # no slack to exploit
+
+        total_macs = sum(a["MACs_assigned"] for a in layer["allocations"])
+        improved = False
+        updates = []
+
+        for alloc in layer["allocations"]:
+            chip_type = alloc["chip_type"]
+            act_sparsity = alloc["Activation Sparsity"]
+            weight_bits = alloc["allocated_bits"]
+            base_r, base_c = chiplet_specs[chip_type]["base"]
+            base_bits_per_cell = chipletTypesDict[chip_type]["Bits/cell"]
+
+            # Recalculate MACs and xbar config
+            macs = alloc["MACs_assigned"]
+            cap = base_r * base_c * base_bits_per_cell
+            xbars_req = math.ceil(weight_bits / cap)
+            per_xbar_nonzeros = weight_bits / xbars_req
+            xbar_sparsity = (cap - per_xbar_nonzeros) / cap
+
+            best_config = {
+                "tops": alloc["optimized_tops"],
+                "epm": alloc["optimized_energy_per_mac"],
+                "rows": alloc.get("optimal_ou_row", base_r),
+                "cols": alloc.get("optimal_ou_col", base_c)
+            }
+            best_energy = macs * alloc["optimized_energy_per_mac"]
+
+            try:
+                r, c, new_tops, new_epm = getOUSize(
+                    xbar_sparsity=xbar_sparsity,
+                    num_xbars=xbars_req,
+                    chiplet_type=chip_type,
+                    weight_bits=weight_bits,
+                    activation_sparsity=act_sparsity
+                )
+
+                if r < int(base_r * act_sparsity) or new_tops == 0:
+                    continue  # invalid OU
+
+                t = macs / (new_tops * 1e12)
+                e = macs * new_epm
+
+                if t <= comm_latency and e < best_energy:
+                    best_energy = e
+                    best_config = {
+                        "tops": new_tops,
+                        "epm": new_epm,
+                        "rows": r,
+                        "cols": c
+                    }
+                    improved = True
+
+            except Exception as ex:
+                print(f"⚠️  OU optimization failed for chiplet {alloc['chip_id']}: {ex}")
+                continue
+
+            if (alloc["optimized_tops"], alloc["optimized_energy_per_mac"]) != (best_config["tops"], best_config["epm"]):
+                updates.append({
+                    "chip_id": alloc["chip_id"],
+                    "old_tops": alloc["optimized_tops"],
+                    "new_tops": best_config["tops"],
+                    "old_epm": alloc["optimized_energy_per_mac"],
+                    "new_epm": best_config["epm"],
+                    "old_r": alloc.get("optimal_ou_row", base_r),
+                    "old_c": alloc.get("optimal_ou_col", base_c),
+                    "new_r": best_config["rows"],
+                    "new_c": best_config["cols"]
+                })
+                alloc["optimized_tops"] = best_config["tops"]
+                alloc["optimized_energy_per_mac"] = best_config["epm"]
+                alloc["optimal_ou_row"] = best_config["rows"]
+                alloc["optimal_ou_col"] = best_config["cols"]
+
+        if improved:
+            t, e, p, edp, maxp = compute_layer_time_energy(layer["allocations"], total_macs)
+            layer["time_s"] = t
+            layer["energy_J"] = e
+            layer["avg_power_W"] = p
+            layer["edp"] = edp
+            layer["max_chiplet_power_W"] = maxp
+
+            print(f"\n🔄 Layer {layer['layer']} Optimized")
+            print(f"   → Time: {orig_time:.3e}s → {t:.3e}s")
+            print(f"   → Energy: {orig_energy:.3e}J → {e:.3e}J")
+            for u in updates:
+                print(f"   • {u['chip_id']}:")
+                print(f"     TOPS: {u['old_tops']:.2f} → {u['new_tops']:.2f}")
+                print(f"     E/MAC: {u['old_epm']:.2e} → {u['new_epm']:.2e}")
+                print(f"     OU Shape: {u['old_r']}×{u['old_c']} → {u['new_r']}×{u['new_c']}")
+
+    # Final summary
+    new_total_energy = sum(l["energy_J"] for l in results)
+    new_max_latency = max(l["time_s"] for l in results)
+    new_edp = new_total_energy * new_max_latency
+
+        
+
 
 if __name__ == "__main__":
     workload_csv = "workloads/vgg16_stats.csv"
@@ -774,7 +878,7 @@ if __name__ == "__main__":
         { "layer": int(row["Layer #"]), "activations_kb": float(row["Activations(KB)"]) }
         for _, row in df.iterrows()
     ]
-    chip_dist    = [100, 0, 0, 0, 0]# hetOU
+    chip_dist    = [0, 10, 0, 0, 0]# hetOU
     results      = scheduler(workload_csv, chip_dist)
 
     # per-layer details
@@ -790,8 +894,8 @@ if __name__ == "__main__":
     compute_latency  = max(l["time_s"]   for l in results)
     compute_workload_edp = compute_energy * compute_latency
     print("\nWorkload summary:")
-    print(f"  Final Compute energy : {compute_energy:.3e} J")
     print(f"  Final Compute latency: {compute_latency:.3e} s")
+    print(f"  Final Compute energy : {compute_energy:.3e} J")
     print(f"  Final Compute EDP    : {compute_workload_edp:.3e} J·s")
 
     # check violations
@@ -800,13 +904,13 @@ if __name__ == "__main__":
         print(f"\nWarning: layers {bad} exceed the {MAX_CHIPLET_POWER}W peak‑power cap.")
     
     print("\nGettig layer stats\n")
-    getLayerStats()
+    # getLayerStats(chip_dist)
     topologies = [
         "kite",
         "mesh",
         "hexa",
-        "floret",
-        "sfc"
+        "floret"
+        #"sfc"
     ]
 
     params = {
@@ -826,61 +930,78 @@ if __name__ == "__main__":
     "kite":   1.0,
     "mesh":   1.0,
     "hexa":   1/3,
-    "floret": 2.0,
-    "sfc":    2.0
+    "floret": 2.0
+    #"sfc":    2.0
     }
 
     buswidth_scale = {
     "kite":   1.0,
     "mesh":   1.0,
     "hexa":   3/4,
-    "floret": 2.0,
-    "sfc":    2.0
+    "floret": 2.0
+    #"sfc":    2.0
     }
 
-    for t in topologies:
-        result = build_chiplet_mesh(results, topology=t)
-        if t == "floret":
-            G, pos, labels, lam, psi = result
-            plot_chiplet_mesh(G, pos, labels, topology=t, lam=lam, psi=psi)
-        else:
-            G, pos, labels = result
-            plot_chiplet_mesh(G, pos, labels, topology=t)
+    ## FOCUSING ON COMPUTE TIME FOR NOW, BELOW IS COMMUNICATION COSTS
+    # for t in topologies:
+    #     result = build_chiplet_mesh(results, topology=t)
+    #     if t == "floret":
+    #         G, pos, labels, lam, psi = result
+    #         # plot_chiplet_mesh(G, pos, labels, topology=t, lam=lam, psi=psi) UNCOMMENT TO PLOT
+    #     else:
+    #         G, pos, labels = result
+    #         # plot_chiplet_mesh(G, pos, labels, topology=t) UNCOMMENT TO PLOT
         
-        # Initialize totals
-        total_hops = 0
-        total_weighted_hops = 0
-        communicate_latency = 0
-        total_cycles = 0
-        communicate_energy = 0.0
+    #     # Initialize totals
+    #     total_hops = 0
+    #     total_weighted_hops = 0
+    #     communicate_latency = 0
+    #     longest_layer = 0
+    #     total_cycles = 0
+    #     communicate_energy = 0.0
 
-         # Scale interconnect bandwidth before simulating
-        scaled_params = params.copy()
-        scaled_params["noi_bandwidth_bits_per_sec"] = (params["noi_bandwidth_bits_per_sec"] * bandwidth_scale.get(t, 1.0))
-        scaled_params["bus_width"] = (params["bus_width"] * buswidth_scale.get(t, 1.0))
+    #     # Track total latency per layer transfer
+    #     layer_pair_latency = defaultdict(float)
 
-        print(f"Topology: {t}")
-        logs = simulate_activations_between_layers(workload, results, G, scaled_params)
-        for log in logs:
-            # print(f"L{log['src_layer']} → L{log['dst_layer']}, {log['src_chiplet']} → {log['dst_chiplet']}, {log['activations_kb']} KBs,{log['hops']} hops, {log['energy_joules']:.2e} J")
-            total_hops       += log["hops"]
-            total_weighted_hops += log["weighted_hops"]
-            communicate_latency += log["latency_s"]
-            total_cycles     += log["cycles"]
-            communicate_energy += log["energy_joules"]
+    #      # Scale interconnect bandwidth before simulating
+    #     scaled_params = params.copy()
+    #     scaled_params["noi_bandwidth_bits_per_sec"] = (params["noi_bandwidth_bits_per_sec"] * bandwidth_scale.get(t, 1.0))
+    #     scaled_params["bus_width"] = (params["bus_width"] * buswidth_scale.get(t, 1.0))
 
-        # Communcation costs for each topology
-        print(f"\n📊 Communication Cost Summary for {t.upper()}:")
-        print(f"Latency: {communicate_latency:.2e} s ({total_cycles} cycles)")
-        print(f"Energy: {communicate_energy:.2e} J")
-        print(f"EDP: {(communicate_energy * communicate_latency):.2e} J•s")
+    #     print(f"Topology: {t}")
+    #     logs = simulate_activations_between_layers(workload, results, G, scaled_params)
+    #     for log in logs:
+    #         # print(f"Layer {log['src_layer']} → {log['dst_layer']}, Latency: {log['latency_s']:.2e} s, Energy: {log['energy_joules']:.2e} J, Path: {log['path']}")
+    #         # print(f"L{log['src_layer']} → L{log['dst_layer']}, {log['src_chiplet']} → {log['dst_chiplet']}, {log['activations_kb']} KBs,{log['hops']} hops, {log['energy_joules']:.2e} J")
+    #         layer_pair = (log["src_layer"], log["dst_layer"])
+    #         layer_pair_latency[layer_pair] += log["latency_s"]
+    #         # Accumulate totals 
+    #         total_hops       += log["hops"]
+    #         total_weighted_hops += log["weighted_hops"]
+    #         total_cycles     += log["cycles"]
+    #         communicate_energy += log["energy_joules"]
 
-        total_energy_combined = communicate_energy + compute_energy
-        total_latency_combined = max(communicate_latency, compute_latency)
-        total_edp_combined = total_energy_combined * total_latency_combined
-        print(f"\n📊 Combined Compute and Communication Cost Summary for {t.upper()}:")
-        print(f"Latency: {total_latency_combined:.2e} s")
-        print(f"Energy: {total_energy_combined:.2e} J")
-        print(f"EDP: {(total_energy_combined * total_latency_combined):.2e} J•s")
+    #     # Determine the longest layer transfer time
+    #     longest_layer_pair = max(layer_pair_latency, key=layer_pair_latency.get)
+    #     communicate_latency = layer_pair_latency[longest_layer_pair]
+    #     longest_layer = longest_layer_pair[0]  
 
+    #     # Communcation costs for each topology
+    #     print(f"\n📊 Communication Cost Summary for {t.upper()}:")
+    #     print(f"Longest layer: {longest_layer} -> {longest_layer+1}")
+    #     print(f"Latency: {communicate_latency:.2e} s ({total_cycles} cycles)")
+    #     print(f"Energy: {communicate_energy:.2e} J")
+    #     print(f"EDP: {(communicate_energy * communicate_latency):.2e} J•s")
 
+        # total_energy_combined = communicate_energy + compute_energy
+        # total_latency_combined = max(communicate_latency, compute_latency)
+        # total_edp_combined = total_energy_combined * total_latency_combined
+        
+        # print(f"\n📊 Combined Compute and Communication Cost Summary for {t.upper()}:")
+        # print(f"Latency: {total_latency_combined:.2e} s")
+        # print(f"Energy: {total_energy_combined:.2e} J")
+        # print(f"EDP: {(total_energy_combined * total_latency_combined):.2e} J•s")
+
+        #results_copy = copy.deepcopy(results)
+        # Does not work at the moment
+        # optimize_with_slack(results_copy, communicate_latency)
