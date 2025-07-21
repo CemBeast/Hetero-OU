@@ -30,6 +30,7 @@ chipletTypesDict = {
     "ADC_Less":    {"Size": 163840,  "Bits/cell": 1, "TOPS": 3.8e12, "Energy/MAC": 0.27e-12},
 }
 
+## Readjusts the Energy and Tops of a chiplet based on the new row and col (for OU) as well as giving power density
 def customizeOU(row: int, col: int, chipletName: str):
     baseRow, baseCol = chipletSpecs[chipletName]["base"]
     epm = chipletSpecs[chipletName]["energy_per_mac"]
@@ -52,6 +53,8 @@ def customizeOU(row: int, col: int, chipletName: str):
 
 
 # Writes the OU stats to a CSV file inside OU_Data_Tables folder
+# Goes over steps of 4 for both rows and cols and uses the customizeOU function to get the energy, tops, and power density
+# Time was fabricated and not important for the OU stats
 def writeOUFile(maxRow: int, maxCol: int, chipletName: str, folder: str = "OU_Data_Tables"):
     os.makedirs(folder, exist_ok=True)
     filename = os.path.join(folder, f"{chipletName}_OU_Stats.csv")
@@ -65,6 +68,7 @@ def writeOUFile(maxRow: int, maxCol: int, chipletName: str, folder: str = "OU_Da
     print(f"Saved: {filename}")
     return filename
 
+# Reads the OU file and filters by power density threshold
 def readOUFileAndConstrainByPowerDensity(file_path: str, power_density_threshold: float = 8):
     df = pd.read_csv(file_path)
     filtered = df[df["Power Density"] <= power_density_threshold]
@@ -76,6 +80,7 @@ def readOUFileAndConstrainByPowerDensity(file_path: str, power_density_threshold
     print(f"Filtered data saved to: {new_path}")
     return filtered
 
+# Plots the power density heatmap from OU_Data_Tables stats CSV files
 def plotPowerDensityHeatmap(file_path: str, chipletName: str, log_scale: bool = False):
     df = pd.read_csv(file_path)
     pivot = df.pivot(index="Rows", columns="Cols", values="Power Density")
@@ -172,7 +177,7 @@ def plotPowerDensityHeatmap(file_path: str, chipletName: str, log_scale: bool = 
     plt.show()
 
 
-
+## Helper function for annoting coordinates on the heatmap
 def generate_annotation_coords(start=8, step=12, max_dim=128):
     """
     Generates 24 (row, col) coordinate pairs for annotation,
@@ -187,7 +192,7 @@ def generate_annotation_coords(start=8, step=12, max_dim=128):
             coords.append((r, c))
     return coords
 
-
+## Helper function to simulate MAC operation time based on row, col, and number of MACs
 def simulateMACoperation(row: int, col: int, numMACs: int, chipletName: str):
     baseRow, baseCol = chipletSpecs[chipletName]["base"]
     TOPS = chipletSpecs[chipletName]["tops"] * (row / baseRow) * (col / baseCol) # Adjust TOPS
@@ -196,6 +201,7 @@ def simulateMACoperation(row: int, col: int, numMACs: int, chipletName: str):
     return time
     
 
+## Finds factors of n that are foldable with a input step size and constrained to min_row, max_row, and max_col, returns all possible options
 def get_approx_foldable_factors(n, min_row, max_row, max_col, step=16):
     """
     Finds (row, col) pairs such that:
@@ -226,6 +232,7 @@ def get_approx_foldable_factors(n, min_row, max_row, max_col, step=16):
 
     return factors
 
+## Input is a list of factors, and it selects the config with the smallest row value.
 def select_lowest_row_config(factor_list):
     """
     Selects the config with the smallest row value.
@@ -235,7 +242,7 @@ def select_lowest_row_config(factor_list):
         return None
     return min(factor_list, key=lambda x: (x[0], x[1]))
 
-# Pareto-based rank seletion function
+## Pareto-based rank seletion function
 def rank_based_selection(configs):
     if not configs:
         print("No valid OU configurations found for ranking.")
@@ -259,8 +266,9 @@ def rank_based_selection(configs):
     best_config = min(configs, key=lambda x: x["total_rank"])
     return best_config
 
-# finds the configurations that are powers of 2 and have the minimum area based on weight sparsity
+## finds the configurations that are powers of 2 and have the minimum area based on weight sparsity, and returns smallest area
 def get_power2_crossbar_dims(weight_sparsity, chiplet_dim):
+    # Get required MACS based on weight sparsity
     required_macs = chiplet_dim * chiplet_dim * (1 - weight_sparsity)
 
     # Possible powers of 2 for dimensions up to chiplet size
@@ -276,36 +284,37 @@ def get_power2_crossbar_dims(weight_sparsity, chiplet_dim):
     best_dim = min(valid_dims, key=lambda x: x[0] * x[1])
     return best_dim
 
+# MAIN FUNCTION
+########################################################################################################
+# Parameters are chiplet Name and a given workload from workloads/name_stats.csv
+# Main function to compute crossbar metrics for a given chiplet and workload as it chooses optimal OU config
 def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
     df = pd.read_csv(workloadStatsCSV)
 
-    activationMethod = False
+
+    baseOURow = chipletSpecs[chipletName]["base"][0]
+    baseOUCol = chipletSpecs[chipletName]["base"][1]
 
     results = []
     layer = 0
+    # Iterate through the workload
     for _, row in df.iterrows():
         layer += 1
+        # Get Layer characteristics
         weightsKB = row["Weights(KB)"]
         macs = row["MACs"]
         weightSparsity = row["Weight_Sparsity(0-1)"]
         activationSparsity = row["Activation_Sparsity(0-1)"]
         activationsKB = row["Activations(KB)"]
 
-        # later will change it to accept parameters for row and col
-        baseOURow = chipletSpecs[chipletName]["base"][0]
-        baseOUCol = chipletSpecs[chipletName]["base"][1]
-
-        # For trying trial and error 
-        ouRow = 100
-        ouCol = 100
-
+        # Metrics for each layer, crossbars required, min reequired crossbars(in square form), Macs per crossbar, activations per crossbar
         crossbarsReq = math.ceil(weightsKB * 1024 * 8 / (chipletTypesDict[chipletName]["Size"] * chipletTypesDict[chipletName]["Bits/cell"]))
         minRequiredCrossbars = math.ceil(math.sqrt(chipletTypesDict[chipletName]["Size"]* (1 - weightSparsity)))
         MACSperCrossbar = math.ceil(macs / crossbarsReq)
         activationsPerCrossbar = (activationsKB * 1024 * 8 * (1 - activationSparsity)) / crossbarsReq
 
 
-         # Step 1, get required row for accounting for activation sparsity
+        # Step 1, get required row by accounting for activation sparsity
         rowReq = math.ceil(baseOURow * (1 - activationSparsity))
         # Step 2, find required OU dimensions
         adjustedOUDimensionReq = math.ceil(baseOUCol * baseOURow * (1 - weightSparsity))
@@ -313,18 +322,19 @@ def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
         factors = get_approx_foldable_factors(adjustedOUDimensionReq, rowReq, baseOURow, baseOUCol)
         # Step 4, select config with lowest rows
         idealCrossbarDim = select_lowest_row_config(factors)
+        # Get col required based on row required and the number of MACS 
         colReq = math.ceil(adjustedOUDimensionReq / rowReq)
 
-        # Real method using weight sparsity to get the min dimesnions needed
+        # Real method using weight sparsity to get the min dimesnions needed, more practical than minRequiredCrossbars,
+        # as it provides ideal dimensions vs a square form
         idealCrossbarDim = get_power2_crossbar_dims(weightSparsity, chipletSpecs[chipletName]["base"][0])
+        # IdealCrossbarDim is used to limit the OU options 
 
-
-        # if 128 x 128 and 25% sparse, then we only need 32 x 64 so set the constrains to that instead.
         step = 4
-        colLimit = 32 # FOR IR LIMITATION, only for Standard 
+        colLimit = 32 # FOR IR LIMITATION, only use for Standard 
         possibleOUConfigs = []
         ## Now we want to select optimial OU such that latency and energy is minimized
-        with open("workload_OU_config_results.txt", "w") as f:
+        with open("workload_OU_config_results.txt", "w") as f: # using this writing file to visually see results for personal use
             for ou_row in range(step, idealCrossbarDim[0]+1, step):
                 for ou_col in range(step, colLimit+1, step):
                     OUrequired = math.ceil(idealCrossbarDim[0] * idealCrossbarDim[1]) / (ou_row * ou_col)
@@ -337,8 +347,6 @@ def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
                     if power_density > 8.0:
                         continue  # Skip this config entirely, do not want to include configs that exceed power density
 
-
-                    # print(f"OU Row: {ou_row}, OU Col: {ou_col}, Latency: {latency}, Energy: {energy}, Power Density: {power_density:.2f} W, TOPS: {tops:.2e}, EPM: {epm:.2e}")
                     f.write(f"OU Row: {ou_row}, OU Col: {ou_col}, Latency: {latency}, Energy: {energy}, Power Density: {power_density:.2f} W, TOPS: {tops:.2e}, EPM: {epm:.2e}\n")
                     possibleOUConfigs.append({
                         "ou_row": ou_row,
@@ -348,12 +356,20 @@ def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
                         "power_density": power_density
                     })
                     
+        # Choose the best config based on lowest energy and lowest latency
         best_config = rank_based_selection(possibleOUConfigs)
-        OU_cycles = math.ceil(( baseOUCol * baseOURow * (1 - weightSparsity) * (1 - activationSparsity)) / (ouRow * ouCol))
-        cyclyes_latency = ouCol * math.log2(ouRow) * OU_cycles
-
-        # not needed for now, but can be used later
-        energy = crossbarsReq * math.log2(ouRow) * ouRow * ouCol * OU_cycles
+        bestOUrow = best_config["ou_row"]
+        bestOUcol = best_config["ou_col"]
+        
+        # Compute OU cycles based on the required row * col / bestOUrow * bestOUcol
+        # Equations derived in PPT problem formulation determined by the chiplet type.
+        OU_cycles = math.ceil(( idealCrossbarDim[0] * idealCrossbarDim[1]) / (bestOUrow * bestOUcol))
+        if chipletName == "Standard" or chipletName == "Accumulator":
+            latency = (bestOUrow * 4) * OU_cycles
+            energy = crossbarsReq * bestOUcol * bestOUrow * latency
+        elif chipletName == "Shared" or chipletName == "Adder":
+            latency = 4 * bestOUrow * bestOUcol * math.log2(bestOUrow) * OU_cycles
+            energy = crossbarsReq * bestOUrow * latency
 
         results.append({
             "layer": layer,
@@ -365,9 +381,10 @@ def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
             "Minimum_row_Req": rowReq,
             "Minimum OU Dimension Required": adjustedOUDimensionReq,
             "cycles": OU_cycles,
-            "Latency": cyclyes_latency,
-            "ou_row": ouRow,
-            "ou_col": ouCol,
+            "Latency": latency,
+            "Energy": energy,
+            "ou_row": bestOUrow,
+            "ou_col": bestOUcol,
             "chiplet_name": chipletName,
             "Factors": factors,
             "Minimum Crossbar Dimensions Based on Activations": f"{rowReq} x {colReq}",
