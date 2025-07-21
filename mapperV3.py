@@ -96,8 +96,7 @@ def getOUSize(xbar_sparsity, num_xbars, chiplet_type, weight_bits, activation_sp
                 # scaled energy per MAC
                 rowE = spec["rowKnob"] * row_scales[i]
                 colE = spec["colKnob"] * col_scales[i]
-                other = 100 - spec["rowKnob"] - spec["colKnob"]
-                e_per_mac = base_energy * ((rowE + colE + other) / 100)
+                e_per_mac = base_energy * ((rowE + colE) / 100)
 
                 # instantaneous TOPS → ops/s
                 tops_ops = base_tops * row_scales[i] * col_scales[i] * 1e12
@@ -136,7 +135,8 @@ def getOUSize(xbar_sparsity, num_xbars, chiplet_type, weight_bits, activation_sp
     c = int(base_c * scales[i1])
     rowE = spec["rowKnob"] * scales[i0]
     colE = spec["colKnob"] * scales[i1]
-    e_per_mac = base_energy * ((rowE + colE + (100-spec["rowKnob"]-spec["colKnob"])) / 100)
+    ## FIXed from previous version: add the remaining 100% - rowE - colE
+    e_per_mac = base_energy * ((rowE + colE) / 100)
     scaled_tops = base_tops * scales[i0] * scales[i1]
 
     return r, c, scaled_tops, e_per_mac
@@ -156,7 +156,7 @@ def _getOUSize_manual(xbar_sparsity, num_xbars, chiplet_type, weight_bits, activ
             if r < min_rows:
                 continue
 
-            rowE = spec["rowKnob"]*rs + spec["colKnob"]*cs + (100-spec["rowKnob"]-spec["colKnob"])
+            rowE = spec["rowKnob"]*rs + spec["colKnob"]*cs
             e_per_mac = base_energy * (rowE/100)
             tops_ops = base_tops * rs * cs * 1e12
             peak_power = e_per_mac * tops_ops
@@ -764,112 +764,6 @@ def simulate_activations_between_layers(workload, results, G, params):
 
     return simulation_log
 
-# --- SLACK-AWARE OPTIMIZATION ---
-def optimize_with_slack(results, comm_latency):
-    print("\n🔧 Performing slack-aware optimization to reduce compute energy...")
-    
-    for layer in results:
-        orig_time = layer["time_s"]
-        orig_energy = layer["energy_J"]
-        if orig_time >= comm_latency:
-            continue  # no slack to exploit
-
-        total_macs = sum(a["MACs_assigned"] for a in layer["allocations"])
-        improved = False
-        updates = []
-
-        for alloc in layer["allocations"]:
-            chip_type = alloc["chip_type"]
-            act_sparsity = alloc["Activation Sparsity"]
-            weight_bits = alloc["allocated_bits"]
-            base_r, base_c = chiplet_specs[chip_type]["base"]
-            base_bits_per_cell = chipletTypesDict[chip_type]["Bits/cell"]
-
-            # Recalculate MACs and xbar config
-            macs = alloc["MACs_assigned"]
-            cap = base_r * base_c * base_bits_per_cell
-            xbars_req = math.ceil(weight_bits / cap)
-            per_xbar_nonzeros = weight_bits / xbars_req
-            xbar_sparsity = (cap - per_xbar_nonzeros) / cap
-
-            best_config = {
-                "tops": alloc["optimized_tops"],
-                "epm": alloc["optimized_energy_per_mac"],
-                "rows": alloc.get("optimal_ou_row", base_r),
-                "cols": alloc.get("optimal_ou_col", base_c)
-            }
-            best_energy = macs * alloc["optimized_energy_per_mac"]
-
-            try:
-                r, c, new_tops, new_epm = getOUSize(
-                    xbar_sparsity=xbar_sparsity,
-                    num_xbars=xbars_req,
-                    chiplet_type=chip_type,
-                    weight_bits=weight_bits,
-                    activation_sparsity=act_sparsity
-                )
-
-                if r < int(base_r * act_sparsity) or new_tops == 0:
-                    continue  # invalid OU
-
-                t = macs / (new_tops * 1e12)
-                e = macs * new_epm
-
-                if t <= comm_latency and e < best_energy:
-                    best_energy = e
-                    best_config = {
-                        "tops": new_tops,
-                        "epm": new_epm,
-                        "rows": r,
-                        "cols": c
-                    }
-                    improved = True
-
-            except Exception as ex:
-                print(f"⚠️  OU optimization failed for chiplet {alloc['chip_id']}: {ex}")
-                continue
-
-            if (alloc["optimized_tops"], alloc["optimized_energy_per_mac"]) != (best_config["tops"], best_config["epm"]):
-                updates.append({
-                    "chip_id": alloc["chip_id"],
-                    "old_tops": alloc["optimized_tops"],
-                    "new_tops": best_config["tops"],
-                    "old_epm": alloc["optimized_energy_per_mac"],
-                    "new_epm": best_config["epm"],
-                    "old_r": alloc.get("optimal_ou_row", base_r),
-                    "old_c": alloc.get("optimal_ou_col", base_c),
-                    "new_r": best_config["rows"],
-                    "new_c": best_config["cols"]
-                })
-                alloc["optimized_tops"] = best_config["tops"]
-                alloc["optimized_energy_per_mac"] = best_config["epm"]
-                alloc["optimal_ou_row"] = best_config["rows"]
-                alloc["optimal_ou_col"] = best_config["cols"]
-
-        if improved:
-            t, e, p, edp, maxp = compute_layer_time_energy(layer["allocations"], total_macs)
-            layer["time_s"] = t
-            layer["energy_J"] = e
-            layer["avg_power_W"] = p
-            layer["edp"] = edp
-            layer["max_chiplet_power_W"] = maxp
-
-            print(f"\n🔄 Layer {layer['layer']} Optimized")
-            print(f"   → Time: {orig_time:.3e}s → {t:.3e}s")
-            print(f"   → Energy: {orig_energy:.3e}J → {e:.3e}J")
-            for u in updates:
-                print(f"   • {u['chip_id']}:")
-                print(f"     TOPS: {u['old_tops']:.2f} → {u['new_tops']:.2f}")
-                print(f"     E/MAC: {u['old_epm']:.2e} → {u['new_epm']:.2e}")
-                print(f"     OU Shape: {u['old_r']}×{u['old_c']} → {u['new_r']}×{u['new_c']}")
-
-    # Final summary
-    new_total_energy = sum(l["energy_J"] for l in results)
-    new_max_latency = max(l["time_s"] for l in results)
-    new_edp = new_total_energy * new_max_latency
-
-        
-
 
 if __name__ == "__main__":
     workload_csv = "workloads/vgg16_stats.csv"
@@ -1003,5 +897,3 @@ if __name__ == "__main__":
         # print(f"EDP: {(total_energy_combined * total_latency_combined):.2e} J•s")
 
         #results_copy = copy.deepcopy(results)
-        # Does not work at the moment
-        # optimize_with_slack(results_copy, communicate_latency)

@@ -196,7 +196,7 @@ models_to_run = {
 # Saves each models stats within the workload folder
 for name, fn in models_to_run.items():
     df = analyze_model(name, fn)
-    filename = f"workloads/{name.lower()}_stats.csv"  # Save in folder
-    df.to_csv(filename, index=False)
-    print(f"Saved: {filename}")
+    # filename = f"workloads/{name.lower()}_stats.csv"  # Save in folder
+    # df.to_csv(filename, index=False)
+    # print(f"Saved: {filename}")
 

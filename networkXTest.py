@@ -1,6 +1,7 @@
 import networkx as nx
 import matplotlib.pyplot as plt
 import random
+import pandas as pd
 
 FREQUENCY_HZ = 1e9  # 1 GHz
 
@@ -124,6 +125,7 @@ def simulate_packet_transfer_with_chiplets(G, src, dst, params):
     time_per_packet_inter = (packet_bits * inter_hops / params["noi_bandwidth_bits_per_sec"])
     time_per_packet_s = time_per_packet_intra + time_per_packet_inter
 
+    print("\n🔗 Packet Transfer Simulation Results")
     #print(f"Path: {path}")
     print(f"Total Hops: {num_hops}")
     print(f"Latency: {total_latency_ns} ns ({total_cycles} cycles)")
@@ -147,6 +149,7 @@ def simulate_packet_transfer_with_chiplets(G, src, dst, params):
     print(f"NoC energy usage:  {(intra_energy / total_energy) * 100:.2f}%")
     print(f"NoI energy usage:  {(inter_energy / total_energy) * 100:.2f}%")
     print(f"Time per packet (based on bandwidth): {time_per_packet_s:.2e} s")
+    print(*["-" * 50])
 
     return {
         "path": path,
@@ -160,6 +163,8 @@ def simulate_packet_transfer_with_chiplets(G, src, dst, params):
         "avg_inter_energy_per_hop": avg_inter_energy_per_hop if inter_hops > 0 else None,
         "intra_energy": intra_energy,
         "inter_energy": inter_energy,
+        "NoC_energy_usage_percent": (intra_energy / total_energy) * 100,
+        "NoI_energy_usage_percent": (inter_energy / total_energy) * 100,
         "edp": edp,
         "time_per_packet_s": time_per_packet_s
     }
@@ -242,9 +247,9 @@ def buildKiteGraph(rows, cols):
         for j in range(cols):
             G.add_node((i, j))
             if i + 2 < rows:
-                G.add_edge((i, j), (i + 2, j))
+                G.add_edge((i, j), (i + 2, j), weight=2)
             if j + 2 < cols:
-                G.add_edge((i, j), (i, j + 2))
+                G.add_edge((i, j), (i, j + 2), weight=2)
 
     for i in range(rows):
         for j in range(cols):
@@ -276,10 +281,10 @@ def buildHexaMeshGraph(rows, cols):
                 G.add_edge((i, j), (i, j + 1))
             # Bottom-right neighbor
             if i + 1 < rows and (j + (0 if even_row else 1)) < cols:
-                G.add_edge((i, j), (i + 1, j + (0 if even_row else 1)))
+                G.add_edge((i, j), (i + 1, j + (0 if even_row else 1)), weight=2)
             # Bottom-left neighbor
             if i + 1 < rows and (j - (1 if even_row else 0)) >= 0:
-                G.add_edge((i, j), (i + 1, j - (1 if even_row else 0)))
+                G.add_edge((i, j), (i + 1, j - (1 if even_row else 0)), weight=2)
 
     return G
 
@@ -358,12 +363,13 @@ if __name__ == "__main__":
     "e_cross": 50e-12,
     "noc_bandwidth_bits_per_sec": 32e9,
     "noi_bandwidth_bits_per_sec": 36.8e9
-}
+    }
+
     # For ideal 50/50 split NoC/NoI we want the ratio of intra hops to inter hops
     # to be the same as the ratio of e_cross / e_intra
 
 
-    # # NoC
+    # NoC
     # print("NoC Congiguration")
     # src="C0_0_N0_0"
     # dst="C2_2_N24_24"
@@ -379,10 +385,61 @@ if __name__ == "__main__":
 
     # compare_noc_vs_noi(noc_results, noi_results)
 
-    # run_random_noc_simulations(params)
+    #run_random_noc_simulations(params)
 
 
-    G = buildMeshGraph(4, 4)  # or buildKiteGraph / buildHexaMeshGraph
-    src = (0, 0)
-    dst = (3, 3)
-    simulate_packet_transfer_graph(G, src, dst, params)
+    # G = buildMeshGraph(4, 4)  # or buildKiteGraph / buildHexaMeshGraph
+    # src = (0, 0)
+    # dst = (3, 3)
+    # simulate_packet_transfer_graph(G, src, dst, params)
+
+    #************************************************************************************************#
+    # 7/17/2025 work
+    ## Want to loop through 100-1000 different src-dst pairs and randomly select them
+    # Mesh indicates NoI
+    mesh_x = 9
+    mesh_y = 6
+    # Chiplet indicates NoC
+    chiplet_x = 128
+    chiplet_y = 32
+    res = []
+    num_simulations = 1000
+    G, tile_centers_mesh = create_chiplet_mesh_system(mesh_dim=(mesh_x, mesh_y), chiplet_noc_dim=(chiplet_x, chiplet_y))
+    for i in range(num_simulations):
+        src_chip_x = random.randint(0, mesh_x - 1)
+        src_chip_y = random.randint(0, mesh_y - 1)
+        dst_chip_x = random.randint(0, mesh_x - 1)
+        dst_chip_y = random.randint(0, mesh_y - 1)
+
+        src_node_x = random.randint(0, chiplet_x - 1)
+        src_node_y = random.randint(0, chiplet_y - 1)
+        dst_node_x = random.randint(0, chiplet_x - 1)
+        dst_node_y = random.randint(0, chiplet_y - 1)
+
+        src = f"C{src_chip_x}_{src_chip_y}_N{src_node_x}_{src_node_y}"
+        dst = f"C{dst_chip_x}_{dst_chip_y}_N{dst_node_x}_{dst_node_y}"
+        single_traffic_sim = simulate_packet_transfer_with_chiplets(G, src, dst, params)
+        res.append(single_traffic_sim)
+    
+    df = pd.DataFrame(res)
+
+    averages = df.mean(numeric_only=True)
+
+    print(f"\nAverage Results from {num_simulations} Random Simulations:")
+    for key, value in averages.items():
+        print(f"{key}: {value:.4f}")
+    # #     return {
+    # #     "path": path,
+    # #     "hops": num_hops,
+    # #     "cycles": total_cycles,
+    # #     "latency_ns": total_latency_ns,
+    # #     "energy_joules": total_energy,
+    # #     "inter_hops": inter_hops,
+    # #     "intra_hops": intra_hops,
+    # #     "avg_intra_energy_per_hop": avg_intra_energy_per_hop if intra_hops > 0 else None,
+    # #     "avg_inter_energy_per_hop": avg_inter_energy_per_hop if inter_hops > 0 else None,
+    # #     "intra_energy": intra_energy,
+    # #     "inter_energy": inter_energy,
+    # #     "edp": edp,
+    # #     "time_per_packet_s": time_per_packet_s
+    # # }

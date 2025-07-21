@@ -2,6 +2,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.colors as mcolors
+import os
+import understandingOU
+from matplotlib.ticker import LogLocator, FuncFormatter
+import matplotlib.ticker as mticker
 
 def parse_edp_blocks(file_path):
     data = []
@@ -21,34 +25,42 @@ def parse_edp_blocks(file_path):
                     pass  # Skip malformed EDP rows
     return pd.DataFrame(data, columns=["Rows", "Cols", "EDP"])
 
-def plot_edp_heatmap_log(df_edp, edp_max=None, save_path=None, shared=False):
+def plot_edp_heatmap_log(df_edp, save_path=None, log_scale: bool = True):
     """
     Plot a heatmap of EDP values on a logarithmic scale.
 
     Parameters:
     - df_edp: DataFrame containing 'Rows', 'Cols', and 'EDP' columns.
-    - edp_max: Optional float to override the maximum EDP value for the color scale.
     """
+    filename = os.path.basename(save_path)
+    chipletName = filename.split("_OU")[0]
+
     pivot = df_edp.pivot(index="Rows", columns="Cols", values="EDP")
 
     # Replace or filter zeros/NaNs for LogNorm safety
     pivot_safe = pivot.replace(0, np.nan).dropna(how="all").dropna(axis=1, how="all")
 
-    vmin = pivot_safe.min().min()
-    vmax = pivot_safe.max().max()
-
-    if edp_max is not None:
-        vmax = edp_max
-
-    # Guard against any remaining invalid vmin/vmax
-    if vmin <= 0 or vmax <= 0:
-        raise ValueError("LogNorm requires positive non-zero vmin and vmax")
+    vmin = 1e-07
+    vmax = 1e-05
 
     plt.figure(figsize=(12, 8))
-    plt.title("Accumulator OU")
-    norm = mcolors.LogNorm(vmin=vmin, vmax=edp_max if edp_max is not None else vmax)
-    heatmap = plt.imshow(pivot_safe, origin="lower", cmap="viridis", aspect="auto", norm=norm)
-    if shared:
+    plt.title(f"{chipletName} OU")
+    
+    if log_scale:
+        norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+        heatmap = plt.imshow(pivot_safe, origin="lower", cmap="turbo", aspect="auto", norm=norm)
+    else:
+        heatmap = plt.imshow(pivot_safe, origin="lower", cmap="turbo", aspect="auto", vmin=vmin, vmax=vmax)
+
+    # Colorbar formatting
+    cbar = plt.colorbar(heatmap)
+    ticks = [1e-7, 1e-6, 1e-5]
+    cbar.set_ticks(ticks)
+    cbar.ax.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, pos: f"{x:.1e} edp")
+    )
+
+    if chipletName == "Shared":
         # After computing pivot_safe
         col_labels = pivot_safe.columns
         row_labels = pivot_safe.index
@@ -59,12 +71,39 @@ def plot_edp_heatmap_log(df_edp, edp_max=None, save_path=None, shared=False):
 
         plt.xticks(ticks=x_ticks, labels=col_labels[x_ticks], rotation=45)
         plt.yticks(ticks=y_ticks, labels=row_labels[y_ticks])
+        annotations = understandingOU.generate_annotation_coords(start=28, step=64, max_dim=764)  # Adjust step for Shared chiplet
+    elif chipletName == "Accumulator":
+        # After computing pivot_safe
+        col_labels = pivot_safe.columns
+        row_labels = pivot_safe.index
+
+        # Define tick frequency (e.g., every 2th label)
+        x_ticks = np.arange(0, len(col_labels), 2)
+        y_ticks = np.arange(0, len(row_labels), 2)
+
+        plt.xticks(ticks=x_ticks, labels=col_labels[x_ticks], rotation=45)
+        plt.yticks(ticks=y_ticks, labels=row_labels[y_ticks])
+        annotations = understandingOU.generate_annotation_coords(start=12, step=24, max_dim=256)  # Adjust step for Accumulator chiplet
     else:
         plt.xticks(ticks=np.arange(len(pivot_safe.columns)), labels=pivot_safe.columns, rotation=45)
         plt.yticks(ticks=np.arange(len(pivot_safe.index)), labels=pivot_safe.index)
+
+        if chipletName == "Adder":
+            annotations = understandingOU.generate_annotation_coords(start=4, step=8, max_dim=64)
+        else:
+            annotations = understandingOU.generate_annotation_coords()
+        
+
+    for row, col in annotations:
+        try:
+            value = pivot_safe.loc[row, col]
+            plt.text(pivot_safe.columns.get_loc(col), pivot_safe.index.get_loc(row),
+                    f"{value:.2e}", color='black', ha='center', va='center', fontsize=8, fontweight='bold')
+        except KeyError:
+            continue  # In case the exact row/col is missing due to cl
+
     plt.xlabel("OU Columns")
     plt.ylabel("OU Rows")
-    plt.colorbar(heatmap, label="EDP (log scale)")
 
     if save_path:
         plt.savefig(save_path, dpi=300)
@@ -74,5 +113,5 @@ def plot_edp_heatmap_log(df_edp, edp_max=None, save_path=None, shared=False):
     plt.show()
 
 # Example usage
-df_edp = parse_edp_blocks("HomoOULayerComputeResults/Accumulator_OU_Sweep.csv")  # Replace with your actual path
-plot_edp_heatmap_log(df_edp, edp_max=1, save_path="OUHeatmaps/Accumulator_OU_Heatmap.png", shared=True)
+df_edp = parse_edp_blocks("HomoOULayerComputeResults/ADC_Less_OU_Sweep.csv")  # Replace with your actual path
+plot_edp_heatmap_log(df_edp, save_path="OUHeatmaps/ADC_Less_OU_Heatmap.png")

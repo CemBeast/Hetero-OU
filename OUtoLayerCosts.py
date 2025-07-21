@@ -14,6 +14,23 @@ chiplet_specs = {
     "Accumulator": {"base": (256, 256),"rowKnob": 55.0, "colKnob": 51.0, "tops": 35.0, "energy_per_mac": 0.22e-12},
     "ADC_Less":    {"base": (128, 128),"rowKnob": 64.4, "colKnob": 20.0, "tops": 3.8,  "energy_per_mac": 0.27e-12},
 }
+### 128 x 128 ->   == (row = 0.87x 87.5% = 0.76125 ; col = 0.125 x 12.5% = 0.015625) -> 0.776875
+### 128 x 64 ->    == (row = 0.87 x 87.5% = 0.76125 : col = 0.12 x 6.25% = 0.0075) -> 0.76875
+### 128 x 32 ->    == (row = 0.87 x 87.5% = 0.76125 : col = 0.12 x 3.125% = 0.00375) -> 0.76500
+### 128 x 16 ->    == (row = 0.87 x 87.5% = 0.76125 : col = 0.12 x 1.5625% = 0.001875) -> 0.763125
+### 128 x 8 ->     == (row = 0.87 x 87.5% = 0.76125 : col = 0.12 x 0.78125% = 0.0009375) -> 0.7621875
+### 128 x 4 ->     == (row = 0.87 x 87.5% = 0.76125 : col = 0.12 x 0.390625% = 0.00046875) -> 0.76171875
+
+### 64 x 128 ->    == (row = 0.87 x 43.75% = 0.38125 : col = 0.12 x 12.5% = 0.015) -> 0.39625
+### 32 x 128 ->    == (row = 0.87 x 21.875% = 0.19125 : col = 0.12 x 12.5% = 0.015) -> 0.20625
+         
+### 4 x 4 -> == (row = .22 x 0.00859375 = 0.001890625 : col = .22 x 0.00796875 = 0.001753125) -> 0.00364375
+### 128 x 128 -> == (row = .22 x 0.875 = 0.1925 : col = .22 x 0.125 = 0.0275) -> 0.2200
+
+# Formula
+# E_rows = Total_Energy/Mac * rowKnob * (rows/base_rows)
+# E_cols = Total_Energy/Mac * colKnob * (cols/base_cols)
+# E_total = E_rows + E_cols 
 
 # -----------------------------------------------------------------------------
 # Chip specs & capacity helper 
@@ -32,19 +49,15 @@ def RecalculateChipletSpecs(rows: int, cols: int, chipletType: str):
     """
     spec = chiplet_specs[chipletType]
     base_rows, base_cols = spec["base"]
-
     # Constraint check
     if rows > base_rows or cols > base_cols:
         raise ValueError(f"Requested OU size ({rows}, {cols}) exceeds base size ({base_rows}, {base_cols}) for {chipletType}")
 
-
     rs = rows / base_rows
     cs = cols / base_cols
 
-    rowE = spec["rowKnob"]*rs + spec["colKnob"]*cs + (100-spec["rowKnob"]-spec["colKnob"])
-    print(f"Row energy adjustment factor for {chipletType}: {rowE:.2f}")
+    rowE = spec["rowKnob"]*rs + spec["colKnob"]*cs 
     e_per_mac = spec["energy_per_mac"] * (rowE/100)
-    print(f"Energy per MAC for {chipletType} with {rows} rows and {cols} cols: {e_per_mac:.2e} J/MAC")
 
     # Adjusted TOPS
     tops = spec["tops"] * rs * cs
@@ -63,6 +76,8 @@ def scheduler(csv_path, chip_distribution, ouRows, ouCols):
             inv.append({"id":f"{ct}_{i}", "type":ct,
                         "capacity_left":mapperV3.get_chip_capacity_bits(ct)})
     layers = []
+
+    # For each layer, allocate bits to chips and compute metrics to append to layers (results)
     for _, row in df.iterrows():
         layer_id     = int(row["Layer #"])
         rem_bits     = row["Adjusted_Weights_bits"]
@@ -207,12 +222,12 @@ def append_layer_results_csv(chiplet_name: str,
     # Compute block-wide summary
     latency = max(lr["time_s"] for lr in layer_results)
     energy  = sum(lr["energy_J"] for lr in layer_results)
-
-
     # EDP = Energy Delay Product
     edp     = latency * energy
-    scale = chipletTypesDict["Shared"]["Size"] / (rows * cols)
-    edp *= scale  # scale EDP by shared's size for normalization
+    
+    # S
+    # scale = chipletTypesDict[chiplet_name]["Size"] / (rows * cols)
+    # edp *= scale  # scale EDP by shared's size for normalization
 
     # Write block to CSV string
     lines = []
@@ -245,9 +260,9 @@ def print_detailed_results(layer_results: list):
     """
     # per-layer details
     for lr in layer_results:
-        # print(f"\nLayer {lr['layer']}:")
-        # for a in lr["allocations"]:
-        #     print(" ", a)
+        print(f"\nLayer {lr['layer']}:")
+        for a in lr["allocations"]:
+            print(" ", a)
         print(f"Layer: {lr['layer']}, Time: {lr['time_s']:.3e}s, Energy: {lr['energy_J']:.3e}J, "
               f"EDP: {lr['edp']:.3e}, MaxP: {lr['max_chiplet_power_W']:.3e}W, ")
 
@@ -333,11 +348,11 @@ if __name__ == "__main__":
         { "layer": int(row["Layer #"]), "activations_kb": float(row["Activations(KB)"]) }
         for _, row in df.iterrows()
     ]
-    chip_dist    = [0, 0, 0, 100, 0]# hetOU
-    # results = scheduler(workload_csv, chip_dist, 4, 28)
-    # print_detailed_results(results)
+    chip_dist    = [0, 0, 0, 0, 120]# hetOU
+    results = scheduler(workload_csv, chip_dist, 4, 4)
+    print_detailed_results(results)
     ##### Writes and APPENDS to file so only run once
-    # sweep_ou_sizes("Accumulator", chip_dist, workload_csv, step=4)
+    sweep_ou_sizes("ADC_Less", chip_dist, workload_csv, step=4)
 
-    print_summary_csv_format("HomoOULayerComputeResults/Standard_OU_Sweep.csv")
+    #print_summary_csv_format("HomoOULayerComputeResults/ADC_Less_OU_Sweep.csv")
 
