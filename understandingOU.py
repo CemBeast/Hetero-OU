@@ -373,11 +373,16 @@ def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV
             colReq = math.ceil(adjustedOUDimensionReq / rowReq)
 
             step = 4
-            colLimit = 32 # FOR IR LIMITATION, only use for Standard 
+            colLimit = idealCrossbarDim[1] # set colum limit to the required dimension
+            if chipletName == "Standard":
+                colLimit = 32 # FOR IR LIMITATION, only use for Standard 
             accumulatorBufferSize = 32 # Set accumulator buffer size to 32
 
-            max_col_limit = min(colLimit, idealCrossbarDim[1]) # choose the lowest value as limit
-            idealCrossbarDim = (idealCrossbarDim[0], max_col_limit) # reassign idealCrossbar Dim
+            
+            max_col_limit = min(colLimit, idealCrossbarDim[1]) # choose the lowest value as limit for column search space
+            # Commenting out for now, i believe i can delete the lower lines code later as we should not reassign 
+            # the Crequired to colLimit col limit is simply for searching the proper OU 
+            # idealCrossbarDim = (idealCrossbarDim[0], max_col_limit) # reassign idealCrossbar Dim
             
             if chipletName == "Shared":
                 idealCrossbarDim = (idealCrossbarDim[0] * 2 , idealCrossbarDim[1] * 2)
@@ -947,10 +952,10 @@ if __name__ == "__main__":
     #workload_csv = "workloads/vgg16_stats.csv"
     workloads = ["workloads/resnet18_stats.csv", "workloads/resnet18_stats_pruned.csv", "workloads/vgg16_stats.csv",
                  "workloads/vgg16_stats_pruned.csv"]
-    workloads = ["workloads/vgg16_stats_pruned.csv"]
+    workloads = ["workloads/vgg16_stats.csv"]
     chiplets = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
-    chiplets = ["Shared"]
-    chipDist = [0, 1000, 0, 0 ,0]
+    chiplets = ["Standard"]
+    chipDist = [100, 0, 0, 0 ,0]
 
     for workload_csv in workloads:
         print(f"WORKLOAD --- {workload_csv}")
@@ -958,30 +963,25 @@ if __name__ == "__main__":
             print(f"CHIP --- {chip}")
             res, layers = computeCrossbarMetrics(chipDist, chipletName=chip, workloadStatsCSV=workload_csv)
             print_layer_table(res, layers, chip)
-            # for r in res:
-            #     print(f"Layer: {r['layer']}")
-            #     print(f"Weight Sparsity: {r['Weight_Sparsity']}")
-            #     print(f"Minimum Row Requirement: {r['Minimum_row_Req']}")
-            #     print(f"Crossbars Required: {r['crossbars_required']}")
-            #     print(f"Minimum OU Dimension Required: {r['Minimum OU Dimension Required']}")
-            #     print(f"Factors of OU Dimension: {r['Factors']}")
-            #     print(f"Minimum Crossbar Dimensions Based on Activations: {r['Minimum Crossbar Dimensions Based on Activations']}")
-            #     print(f"Ideal Crossbar Dimensions: {r['Ideal Crossbar Dimensions']}")
-            #     print(f"Rank Based Pareto Config: row:{r['Rank Based Pareto Config']['ou_row']}, col:{r['Rank Based Pareto Config']['ou_col']}, latency: {r['Rank Based Pareto Config']['latency']}, energy: {r['Rank Based Pareto Config']['energy']}, power_density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
-            #     print("-" * 40)
+            for r in res:
+                print(f"Layer: {r['layer']}")
+                print(f"Weight Sparsity: {r['Weight_Sparsity']}")
+                print(f"Minimum Row Requirement: {r['Minimum_row_Req']}")
+                print(f"Crossbars Required: {r['crossbars_required']}")
+                print(f"Minimum OU Dimension Required: {r['Minimum OU Dimension Required']}")
+                print(f"Factors of OU Dimension: {r['Factors']}")
+                print(f"Minimum Crossbar Dimensions Based on Activations: {r['Minimum Crossbar Dimensions Based on Activations']}")
+                print(f"Ideal Crossbar Dimensions: {r['Ideal Crossbar Dimensions']}")
+                print(f"Rank Based Pareto Config: row:{r['Rank Based Pareto Config']['ou_row']}, col:{r['Rank Based Pareto Config']['ou_col']}, latency: {r['Rank Based Pareto Config']['latency']}, energy: {r['Rank Based Pareto Config']['energy']}, power_density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
+                print("-" * 40)
 
-            # for lr in layers:
-            #     print(f"\nLayer {lr['layer']}:")
-            #     for a in lr["allocations"]:
-            #         print(" ", a)
-            #     print(f"  → Time: {lr['time_s']:.3e}s, Energy: {lr['energy_J']:.3e}J, "
-            #         f"Power: {lr['avg_power_W']:.3e}W, MaxP: {lr['max_chiplet_power_W']:.3e}W, EDP: {lr['edp']:.3e}")
+            for lr in layers:
+                print(f"\nLayer {lr['layer']}:")
+                for a in lr["allocations"]:
+                    print(" ", a)
+                print(f"  → Time: {lr['time_s']:.3e}s, Energy: {lr['energy_J']:.3e}J, "
+                    f"Power: {lr['avg_power_W']:.3e}W, MaxP: {lr['max_chiplet_power_W']:.3e}W, EDP: {lr['edp']:.3e}")
 
-            # for r in res:
-            #     #print(f"Layer {r['layer']}: Minimum Crossbar Dimensions: {r['Minimum Crossbar Dimensions']}")
-            #     # print(f"Layer {r['layer']}: Optimal OU Config: {r['Rank Based Pareto Config']}")
-            #     print(f"Layer {r['layer']}: Minimal Xbar Dimension: {r['Ideal Crossbar Dimensions']} Optimal OU Config: {r['Rank Based Pareto Config']['ou_row']}x{r['Rank Based Pareto Config']['ou_col']}, Latency: {r['Rank Based Pareto Config']['latency']}, Energy: {r['Rank Based Pareto Config']['energy']}, Power Density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
-            
             # plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, chipletName=chip, configs=res)
 
 
