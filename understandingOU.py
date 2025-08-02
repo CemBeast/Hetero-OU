@@ -8,6 +8,8 @@ import matplotlib.colors as mcolors
 import matplotlib.ticker as mticker
 from matplotlib.ticker import FuncFormatter, LogLocator
 from itertools import product
+import mapperV3
+import subprocess
 
 
 XBARS_PER_TILE = 96
@@ -202,6 +204,7 @@ def simulateMACoperation(row: int, col: int, numMACs: int, chipletName: str):
     
 
 ## Finds factors of n that are foldable with a input step size and constrained to min_row, max_row, and max_col, returns all possible options
+# if n = 1147 it rounds to step of 16 -> 1152 and checks factors of increments of 16 so it checks 1168, 1184, 1200 etc until nice factors
 def get_approx_foldable_factors(n, min_row, max_row, max_col, step=16):
     """
     Finds (row, col) pairs such that:
@@ -212,35 +215,53 @@ def get_approx_foldable_factors(n, min_row, max_row, max_col, step=16):
     """
     factors = []
 
-    # Step 1: Adjust min_row to next multiple of `step`
+    # Round n up to multiple of step
+    if n % step != 0:
+        n = ((n // step) + 1) * step
+
+    # Round min_row up to multiple of step
     if min_row % step != 0:
         min_row = ((min_row // step) + 1) * step
 
-    # Step 2: Try rows from min_row to max_row in steps of `step`
+    # Iterate possible rows
     for row in range(min_row, max_row + 1, step):
         raw_col = math.ceil(n / row)
 
-        # Step 3: Round up col to next multiple of `step`
+        # Round col up to next multiple of step
         if raw_col % step != 0:
             col = ((raw_col // step) + 1) * step
         else:
             col = raw_col
 
-        # Step 4: Check if it fits within constraints
+        # If col > max_col but row ≤ max_col, try swapping
+        if col > max_col and row <= max_col and row >= min_row:
+            if row <= max_col and col <= max_row:  # swap and check constraints
+                factors.append((col, row))
+
+        # Normal check (no swap needed)
         if col <= max_col:
             factors.append((row, col))
 
     return factors
 
 ## Input is a list of factors, and it selects the config with the smallest row value.
-def select_lowest_row_config(factor_list):
+def select_lowest_row_config(factor_list, min_R):
     """
-    Selects the config with the smallest row value.
+    Selects the config with the smallest row value >= min_R.
     If multiple have the same row, returns the one with the smallest column.
     """
     if not factor_list:
         return None
-    return min(factor_list, key=lambda x: (x[0], x[1]))
+
+    # Filter factors to only those meeting row >= min_R
+    valid_factors = [f for f in factor_list if f[0] >= min_R]
+
+    # If no valid factors remain, return None
+    if not valid_factors:
+        return None
+
+    # Select lowest row, then lowest column among valid
+    return min(valid_factors, key=lambda x: (x[0], x[1]))
 
 ## Pareto-based rank seletion function
 def rank_based_selection(configs):
@@ -272,13 +293,18 @@ def get_power2_crossbar_dims(weight_sparsity, chiplet_dim):
     required_macs = chiplet_dim * chiplet_dim * (1 - weight_sparsity)
 
     # Possible powers of 2 for dimensions up to chiplet size
-    powers = [2 ** i for i in range(3, int(math.log2(chiplet_dim)) + 1)]  # [8, 16, ..., 128]
+    powers = [2 ** i for i in range(3, int(math.log2(chiplet_dim)) + 1)]
 
     # Store valid (row, col) pairs
     valid_dims = []
     for r, c in product(powers, repeat=2):
         if r * c >= required_macs:
             valid_dims.append((r, c))
+
+    if not valid_dims:
+        # fallback: largest possible power-of-two square
+        max_power = 2 ** int(math.log2(chiplet_dim))
+        return (max_power, max_power)
 
     # Return the one with minimal area (r * c)
     best_dim = min(valid_dims, key=lambda x: x[0] * x[1])
@@ -288,58 +314,92 @@ def get_power2_crossbar_dims(weight_sparsity, chiplet_dim):
 ########################################################################################################
 # Parameters are chiplet Name and a given workload from workloads/name_stats.csv
 # Main function to compute crossbar metrics for a given chiplet and workload as it chooses optimal OU config
-def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
+def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV: str, ):
     df = pd.read_csv(workloadStatsCSV)
 
 
-    baseOURow = chipletSpecs[chipletName]["base"][0]
-    baseOUCol = chipletSpecs[chipletName]["base"][1]
+    # build chip inventory
+    inv = []
+    types = list(chipletTypesDict.keys())
+    for ct, cnt in zip(types, chip_distribution):
+        for i in range(cnt):
+            inv.append({"id":f"{ct}_{i}", "type":ct,
+                        "capacity_left": mapperV3.get_chip_capacity_bits(ct)})
+
+    baseCrossbarRow = 128
+    baseCrossbarCol = 128
 
     results = []
+    layers = []
     layer = 0
     # Iterate through the workload
-    for _, row in df.iterrows():
-        layer += 1
-        # Get Layer characteristics
-        weightsKB = row["Weights(KB)"]
-        macs = row["MACs"]
-        weightSparsity = row["Weight_Sparsity(0-1)"]
-        activationSparsity = row["Activation_Sparsity(0-1)"]
-        activationsKB = row["Activations(KB)"]
+    with open("workload_OU_config_results.txt", "w") as f:
+        for _, row in df.iterrows():
+            layer += 1
 
-        # Metrics for each layer, crossbars required, min reequired crossbars(in square form), Macs per crossbar, activations per crossbar
-        crossbarsReq = math.ceil(weightsKB * 1024 * 8 / (chipletTypesDict[chipletName]["Size"] * chipletTypesDict[chipletName]["Bits/cell"]))
-        minRequiredCrossbars = math.ceil(math.sqrt(chipletTypesDict[chipletName]["Size"]* (1 - weightSparsity)))
-        MACSperCrossbar = math.ceil(macs / crossbarsReq)
-        activationsPerCrossbar = (activationsKB * 1024 * 8 * (1 - activationSparsity)) / crossbarsReq
+            # For properly computing allocations
+            rem_bits = row["Weights(KB)"] * (1 - row["Weight_Sparsity(0-1)"]) * 1024 * 8
+            total_macs   = row["MACs"]
+            allocs       = []
+            total_bits   = rem_bits
+
+            # Get Layer characteristics
+            weightsKB = row["Weights(KB)"]
+            weightSparsity = row["Weight_Sparsity(0-1)"]
+            activationSparsity = row["Activation_Sparsity(0-1)"]
+            activationsKB = row["Activations(KB)"]
+
+            # ** For Selecting the optimal OU and its other characteristics ** #
+            # Metrics for each layer, crossbars required, min reequired crossbars(in square form), Macs per crossbar, activations per crossbar
+            crossbarsReq = math.ceil(weightsKB * 1024 * 8 / (chipletTypesDict[chipletName]["Size"] * chipletTypesDict[chipletName]["Bits/cell"]))
+            # Old computations below 3 lines
+            minRequiredCrossbars = math.ceil(math.sqrt(chipletTypesDict[chipletName]["Size"]* (1 - weightSparsity)))
+            MACSperCrossbar = math.ceil(total_macs / crossbarsReq)
+            activationsPerCrossbar = (activationsKB * 1024 * 8 * (1 - activationSparsity)) / crossbarsReq
 
 
-        # Step 1, get required row by accounting for activation sparsity
-        rowReq = math.ceil(baseOURow * (1 - activationSparsity))
-        # Step 2, find required OU dimensions
-        adjustedOUDimensionReq = math.ceil(baseOUCol * baseOURow * (1 - weightSparsity))
-        # Step 3, get array of foldable factors to select from
-        factors = get_approx_foldable_factors(adjustedOUDimensionReq, rowReq, baseOURow, baseOUCol)
-        # Step 4, select config with lowest rows
-        idealCrossbarDim = select_lowest_row_config(factors)
-        # Get col required based on row required and the number of MACS 
-        colReq = math.ceil(adjustedOUDimensionReq / rowReq)
+            # Step 1, get required row by accounting for activation sparsity
+            rowReq = math.ceil(baseCrossbarRow * (1 - activationSparsity))
+            # Step 2, find required OU dimensions
+            adjustedOUDimensionReq = math.ceil(baseCrossbarCol * baseCrossbarRow * (1 - weightSparsity))
+            # Step 3, get array of foldable factors to select from
+            factors = get_approx_foldable_factors(adjustedOUDimensionReq, rowReq, baseCrossbarRow, baseCrossbarCol)
+            # Step 4, select config with lowest rows
+            idealCrossbarDim = select_lowest_row_config(factors, rowReq)
+            # Fallback if no factors found
+            if idealCrossbarDim is None:
+                idealCrossbarDim = (baseCrossbarRow, baseCrossbarCol)
+            # Get col required based on row required and the number of MACS ## this is for finding the Minimum Crossbar Dimesnions
+            colReq = math.ceil(adjustedOUDimensionReq / rowReq)
 
-        # Real method using weight sparsity to get the min dimesnions needed, more practical than minRequiredCrossbars,
-        # as it provides ideal dimensions vs a square form
-        idealCrossbarDim = get_power2_crossbar_dims(weightSparsity, chipletSpecs[chipletName]["base"][0])
-        # IdealCrossbarDim is used to limit the OU options 
+            step = 4
+            colLimit = 32 # FOR IR LIMITATION, only use for Standard 
+            accumulatorBufferSize = 32 # Set accumulator buffer size to 32
 
-        step = 4
-        colLimit = 32 # FOR IR LIMITATION, only use for Standard 
-        possibleOUConfigs = []
-        ## Now we want to select optimial OU such that latency and energy is minimized
-        with open("workload_OU_config_results.txt", "w") as f: # using this writing file to visually see results for personal use
+            max_col_limit = min(colLimit, idealCrossbarDim[1]) # choose the lowest value as limit
+            idealCrossbarDim = (idealCrossbarDim[0], max_col_limit) # reassign idealCrossbar Dim
+            
+            if chipletName == "Shared":
+                idealCrossbarDim = (idealCrossbarDim[0] * 2 , idealCrossbarDim[1] * 2)
+            
+            possibleOUConfigs = []
+
+            f.write(f"Layer: {layer}, Crossbars required: {crossbarsReq}\n")
+            ## Now we want to select optimial OU such that latency and energy is minimized
             for ou_row in range(step, idealCrossbarDim[0]+1, step):
-                for ou_col in range(step, colLimit+1, step):
-                    OUrequired = math.ceil(idealCrossbarDim[0] * idealCrossbarDim[1]) / (ou_row * ou_col)
-                    latency  = (((4*ou_row) + ou_col) * OUrequired)
-                    energy = ((chipletSpecs[chipletName]["rowKnob"] * (ou_row/baseOURow)) + (chipletSpecs[chipletName]["colKnob"] * (ou_col/baseOUCol))) * OUrequired
+                for ou_col in range(step, max_col_limit+1, step):
+                    # Compute OU cycles based on the required row * col / bestOUrow * bestOUcol
+                    # Equations derived in PPT problem formulation determined by the chiplet type.
+                    OUrequired = math.ceil((idealCrossbarDim[0] * idealCrossbarDim[1]) / (ou_row * ou_col))
+                    if chipletName == "Standard":
+                        latency = (ou_row * 4) * OUrequired
+                        energy = crossbarsReq * ou_row * ou_col * latency
+                    elif chipletName == "Shared" or chipletName == "Adder":
+                        latency = 4 * ou_row * ou_col * math.log2(ou_row) * OUrequired
+                        energy = crossbarsReq * ou_row * latency
+                    elif chipletName == "Accumulator":
+                        latency = 4 * ou_row * OUrequired * 2 * (OUrequired / accumulatorBufferSize)
+                        energy = crossbarsReq * ou_row * ou_col * latency
 
                     epm, tops, power_density = customizeOU(ou_row, ou_col, chipletName)
 
@@ -347,52 +407,112 @@ def computeCrossbarMetrics(chipletName: str, workloadStatsCSV: str):
                     if power_density > 8.0:
                         continue  # Skip this config entirely, do not want to include configs that exceed power density
 
-                    f.write(f"OU Row: {ou_row}, OU Col: {ou_col}, Latency: {latency}, Energy: {energy}, Power Density: {power_density:.2f} W, TOPS: {tops:.2e}, EPM: {epm:.2e}\n")
                     possibleOUConfigs.append({
                         "ou_row": ou_row,
                         "ou_col": ou_col,
                         "latency": latency,
                         "energy": energy,
-                        "power_density": power_density
+                        "power_density": power_density,
+                        "epm": epm,
+                        "tops": tops
                     })
-                    
-        # Choose the best config based on lowest energy and lowest latency
-        best_config = rank_based_selection(possibleOUConfigs)
-        bestOUrow = best_config["ou_row"]
-        bestOUcol = best_config["ou_col"]
-        
-        # Compute OU cycles based on the required row * col / bestOUrow * bestOUcol
-        # Equations derived in PPT problem formulation determined by the chiplet type.
-        OU_cycles = math.ceil(( idealCrossbarDim[0] * idealCrossbarDim[1]) / (bestOUrow * bestOUcol))
-        if chipletName == "Standard" or chipletName == "Accumulator":
-            latency = (bestOUrow * 4) * OU_cycles
-            energy = crossbarsReq * bestOUcol * bestOUrow * latency
-        elif chipletName == "Shared" or chipletName == "Adder":
-            latency = 4 * bestOUrow * bestOUcol * math.log2(bestOUrow) * OU_cycles
-            energy = crossbarsReq * bestOUrow * latency
+                    f.write(
+                    f"OU Row: {ou_row}, OU Col: {ou_col}, OU required: {OUrequired}, Latency: {latency}, "
+                    f"Energy: {energy}, Power Density: {power_density:.2f} W, "
+                    f"TOPS: {tops:.2e}, EPM: {epm:.2e}\n"
+                )
+            # Choose the best config based on lowest energy and lowest latency
+            best_config = rank_based_selection(possibleOUConfigs)
+            #print(f"[DEBUG] Layer {layer} best config:", best_config)
+            bestOUrow = best_config["ou_row"]
+            bestOUcol = best_config["ou_col"]
+            bestEPM = best_config["epm"]
+            bestTOPS = best_config["tops"]
+            # ** For Selecting the optimal OU and its other characteristics ** #
+            
+            # ** For Computing EPD based on the selected OU and its other characteristics ** #
+            for chip in inv:
+                if rem_bits <= 0: break
+                if chip["capacity_left"] <= 0: continue
+                alloc = min(rem_bits, chip["capacity_left"])
+                AS           = row["Activation_Sparsity(0-1)"]
+                weight_nonzero_bits = alloc
 
-        results.append({
-            "layer": layer,
-            "Weight_Sparsity": weightSparsity,
-            "crossbars_required": crossbarsReq ,
-            "min_required_crossbars": f"{minRequiredCrossbars} x {minRequiredCrossbars}",
-            "MACs_per_crossbar": MACSperCrossbar,
-            "activations_per_crossbar": activationsPerCrossbar,
-            "Minimum_row_Req": rowReq,
-            "Minimum OU Dimension Required": adjustedOUDimensionReq,
-            "cycles": OU_cycles,
-            "Latency": latency,
-            "Energy": energy,
-            "ou_row": bestOUrow,
-            "ou_col": bestOUcol,
-            "chiplet_name": chipletName,
-            "Factors": factors,
-            "Minimum Crossbar Dimensions Based on Activations": f"{rowReq} x {colReq}",
-            "Ideal Crossbar Dimensions": idealCrossbarDim,
-            "Rank Based Pareto Config": best_config,
-        })
+                # how many bits per crossbar
+                cap = chipletTypesDict[chip["type"]]["Size"] * chipletTypesDict[chip["type"]]["Bits/cell"]
 
-    return results
+                # number of crossbars you really need to hold those non‑zero bits
+                xbars_req = math.ceil(weight_nonzero_bits / cap)
+
+                # if you spread the non‑zeros evenly across them:
+                per_xbar_nonzeros = weight_nonzero_bits / xbars_req
+
+                # fraction of each xbar that’s empty
+                xbar_sparsity = (cap - per_xbar_nonzeros) / cap
+
+                frac        = alloc / total_bits
+                macs_assigned = total_macs * frac
+                util        = alloc / chip["capacity_left"]
+
+                chip["capacity_left"] -= alloc
+                rem_bits    -= alloc
+
+                allocs.append({
+                    "chip_id": chip["id"],
+                    "chip_type": chip["type"],
+                    "allocated_bits": int(alloc),
+                    "MACs_assigned": int(macs_assigned),
+                    "Chiplets_reqd": math.ceil(xbars_req/(TILES_PER_CHIPLET*XBARS_PER_TILE)),
+                    "Crossbars_used": xbars_req,
+                    "Crossbar_sparsity": xbar_sparsity,
+                    "weight sparsity":row["Weight_Sparsity(0-1)"],
+                    "Activation Sparsity": AS,
+                    "optimal_ou_row": bestOUrow,
+                    "optimal_ou_col": bestOUcol,
+                    "optimized_tops": bestTOPS,
+                    "optimized_energy_per_mac": bestEPM,
+                    "chiplet_resource_taken": util*100
+                })
+
+            if rem_bits > 0:
+                raise RuntimeError(f"Layer {layer} not fully allocated: {rem_bits:.0f} bits remain")
+
+            t, e, p, edp, maxp = mapperV3.compute_layer_time_energy(allocs, total_macs)
+            layers.append({
+                "layer": layer,
+                "allocations": allocs,
+                "time_s": t,
+                "energy_J": e,
+                "avg_power_W": p,
+                "edp": edp,
+                "max_chiplet_power_W": maxp
+            })
+            # ** For Computing EPD based on the selected OU and its other characteristics ** #
+
+            results.append({
+                "layer": layer,
+                "Weight_Sparsity": weightSparsity,
+                "crossbars_required": crossbarsReq ,
+                "min_required_crossbars": f"{minRequiredCrossbars} x {minRequiredCrossbars}",
+                "MACs_per_crossbar": MACSperCrossbar,
+                "activations_per_crossbar": activationsPerCrossbar,
+                "Minimum_row_Req": rowReq,
+                "Minimum OU Dimension Required": adjustedOUDimensionReq,
+                "OU required": OUrequired,
+                "Latency": latency,
+                "Energy": energy,
+                "ou_row": bestOUrow,
+                "ou_col": bestOUcol,
+                "EPM": bestEPM,
+                "Tops": bestTOPS,
+                "chiplet_name": chipletName,
+                "Factors": factors,
+                "Minimum Crossbar Dimensions Based on Activations": f"{rowReq} x {colReq}",
+                "Ideal Crossbar Dimensions": idealCrossbarDim,
+                "Rank Based Pareto Config": best_config,
+            })
+
+    return results, layers
 
 
 
@@ -622,7 +742,10 @@ def compare_reciprocal_configs(csv_path):
     result_df = pd.DataFrame(comparisons)
     return result_df
 
-def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str, configs: list):
+def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str, configs: list, save_folder: str = "workload layers WS vs OU"):
+    # Ensure save folder exists
+    os.makedirs(save_folder, exist_ok=True)
+    
     # Load the workload CSV
     df = pd.read_csv(workloadStatsCSV)
 
@@ -674,46 +797,193 @@ def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str, configs
     base_filename = os.path.basename(workloadStatsCSV)  # "vgg16_stats.csv"
     workload_name = base_filename.split("_stats")[0].upper()  # "VGG16"
 
+    # Check if filename includes 'sparse'
+    if "pruned" in base_filename.lower():
+        workload_name += " (Sparse)"
+
     # Grid and formatting
     ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
     plt.title(f"Sparsity vs. OU Size per Layer for {workload_name} on {chipletName} Chiplet")
     ax1.set_xticks(layers)
-    ax1.set_xticklabels([str(i) for i in layers], rotation=0, fontsize=11)
+    ax1.set_xticklabels([str(i) for i in layers], rotation=0, fontsize=8)
 
     # Draw rotated OU configs below each tick
     for x, r, c in zip(layers, ou_rows, ou_cols):
         ou_text = f"{r}x{c}"
-        ax1.text(x, -0.06, ou_text, fontsize=10, rotation=90, ha='center', va='top', transform=ax1.get_xaxis_transform())
+        ax1.text(x, -0.06, ou_text, fontsize=6, rotation=90, ha='center', va='top', transform=ax1.get_xaxis_transform())
 
     plt.tight_layout()
-    plt.show()
+    save_path = os.path.join(save_folder, f"{workload_name}_{chipletName}.png")
+    plt.savefig(save_path, dpi=300)
+
+    # save data to a csv for viewing in a table
+    export_layer_data_to_csv(
+        layers=layers,
+        sparsity_percent=sparsity_percent,
+        ou_rows=ou_rows,
+        ou_cols=ou_cols,
+        save_folder=save_folder,
+        workload_name=workload_name,
+        chipletName=chipletName
+    )
+    
+    # Optional to Show
+    # plt.show()
   
+# used in the above function to save to a table
+def export_layer_data_to_csv(layers, sparsity_percent, ou_rows, ou_cols, save_folder, workload_name, chipletName):
+    """
+    Save per-layer data (sparsity, OU config, OU size) to CSV.
+
+    Args:
+        layers (list): Layer numbers.
+        sparsity_percent (list): Weight sparsity percentages.
+        ou_rows (list): OU row dimensions.
+        ou_cols (list): OU column dimensions.
+        save_folder (str): Folder to save the CSV.
+        workload_name (str): Name of the workload (e.g., VGG16 or VGG16 (Sparse)).
+        chipletName (str): Name of the chiplet.
+
+    Returns:
+        str: Path to the saved CSV file.
+    """
+    # Ensure save folder exists
+    os.makedirs(save_folder, exist_ok=True)
+
+    # Build table
+    data = []
+    for i, layer in enumerate(layers):
+        ou_config = f"{ou_rows[i]} x {ou_cols[i]}"
+        data.append([layer, sparsity_percent[i] * .01, ou_config])
+
+    # Create dataframe
+    df = pd.DataFrame(data, columns=["Layer #", "Weight Sparsity (%)", "OU Config", "OU Size"])
+
+    # Save path
+    csv_path = os.path.join(save_folder, f"{workload_name}_{chipletName}_layer_data_table.csv")
+    df.to_csv(csv_path, index=False, sep='\t')
+
+    print(f"Layer data saved to: {csv_path}")
+    return csv_path
+
+
+
+def print_layer_table(res, layers, chiplet_name):
+    table_rows = []
+    seen_chiplets = set()  # Track unique chiplet IDs used
+
+    for r, lr in zip(res, layers):
+        layer_num = r["layer"]
+        weight_sparsity = f"{int(r['Weight_Sparsity'] * 100)}%"
+        dims = r['Ideal Crossbar Dimensions']
+        Rreq = dims[0]
+        Creq = dims[1]
+
+        # Get best config safely
+        best_cfg = r.get('Rank Based Pareto Config')
+        if not isinstance(best_cfg, dict):
+            # Fallback if no valid config
+            row_val = col_val = latency = energy = edp = 0
+        else:
+            row_val = int(best_cfg['ou_row'])
+            col_val = int(best_cfg['ou_col'])
+            latency = best_cfg['latency']
+            energy = best_cfg['energy']
+            edp = latency * energy
+
+        # Add all chip_ids used in this layer to the set
+        for alloc in lr["allocations"]:
+            seen_chiplets.add(alloc["chip_id"])
+
+        # Chiplet # is count of unique chiplets seen so far
+        chiplet_count = len(seen_chiplets)
+
+        # Append row
+        table_rows.append([
+            layer_num,
+            weight_sparsity,
+            Rreq,
+            Creq,
+            row_val,
+            col_val,
+            latency,
+            energy,
+            edp,
+            chiplet_count
+        ])
+
+    # Fix column list (comma between Energy and EDP)
+    df = pd.DataFrame(
+        table_rows,
+        columns=[
+            "Layer #",
+            "Weight Sparsity (%)",
+            "R Required",
+            "C Required",
+            "r",
+            "c",
+            "Latency",
+            "Energy",
+            "EDP",
+            "Chiplet #"
+        ]
+    )
+
+    # Print TSV to terminal and copy to clipboard
+    tsv_data = df.to_csv(sep='\t', index=False)
+    print(tsv_data)
+    subprocess.run("pbcopy", text=True, input=tsv_data)
+    print("→ Data copied to clipboard (tab-delimited). Just paste into Excel.")
+
+    # Save to CSV
+    df.to_csv("layer_table.csv", index=False)
+
 if __name__ == "__main__":
     #### For getting the power density heatmap constrained by 8 Watts for Standard ####
     # filtered_standard = readOUFileAndConstrainByPowerDensity("OU_Data_Tables/Standard_OU_Stats.csv")
     # plotPowerDensityHeatmap("OU_Data_Tables/Standard_OU_Stats_Filtered_PD8.csv", "Standard", log_scale=True)
 
-    workload_csv = "workloads/resnet18_stats_pruned.csv"
-    workload_csv = "workloads/vgg16_stats.csv"
+    # workload_csv = "workloads/resnet34_stats.csv"
+    #workload_csv = "workloads/vgg16_stats.csv"
+    workloads = ["workloads/resnet18_stats.csv", "workloads/resnet18_stats_pruned.csv", "workloads/vgg16_stats.csv",
+                 "workloads/vgg16_stats_pruned.csv"]
+    workloads = ["workloads/vgg16_stats_pruned.csv"]
     chiplets = ["Standard", "Shared", "Adder", "Accumulator", "ADC_Less"]
-    chiplets = ["Shared", "Accumulator"]
+    chiplets = ["Shared"]
+    chipDist = [0, 1000, 0, 0 ,0]
 
-    res = computeCrossbarMetrics(chipletName="Standard", workloadStatsCSV=workload_csv)
-    for r in res:
-        print(f"Layer: {r['layer']}")
-        print(f"Weight Sparsity: {r['Weight_Sparsity']}")
-        print(f"Minimum Row Requirement: {r['Minimum_row_Req']}")
-        print(f"Crossbars Required: {r['crossbars_required']}")
-        print(f"Minimum OU Dimension Required: {r['Minimum OU Dimension Required']}")
-        print(f"Minimum Crossbar Dimensions Based on Activations: {r['Minimum Crossbar Dimensions Based on Activations']}")
-        print(f"Ideal Crossbar Dimensions: {r['Ideal Crossbar Dimensions']}")
-        print(f"Rank Based Pareto Config: row:{r['Rank Based Pareto Config']['ou_row']}, col:{r['Rank Based Pareto Config']['ou_col']}, latency: {r['Rank Based Pareto Config']['latency']}, energy: {r['Rank Based Pareto Config']['energy']}, power_density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
-        print("-" * 40)
+    for workload_csv in workloads:
+        print(f"WORKLOAD --- {workload_csv}")
+        for chip in chiplets:
+            print(f"CHIP --- {chip}")
+            res, layers = computeCrossbarMetrics(chipDist, chipletName=chip, workloadStatsCSV=workload_csv)
+            print_layer_table(res, layers, chip)
+            # for r in res:
+            #     print(f"Layer: {r['layer']}")
+            #     print(f"Weight Sparsity: {r['Weight_Sparsity']}")
+            #     print(f"Minimum Row Requirement: {r['Minimum_row_Req']}")
+            #     print(f"Crossbars Required: {r['crossbars_required']}")
+            #     print(f"Minimum OU Dimension Required: {r['Minimum OU Dimension Required']}")
+            #     print(f"Factors of OU Dimension: {r['Factors']}")
+            #     print(f"Minimum Crossbar Dimensions Based on Activations: {r['Minimum Crossbar Dimensions Based on Activations']}")
+            #     print(f"Ideal Crossbar Dimensions: {r['Ideal Crossbar Dimensions']}")
+            #     print(f"Rank Based Pareto Config: row:{r['Rank Based Pareto Config']['ou_row']}, col:{r['Rank Based Pareto Config']['ou_col']}, latency: {r['Rank Based Pareto Config']['latency']}, energy: {r['Rank Based Pareto Config']['energy']}, power_density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
+            #     print("-" * 40)
 
-    for r in res:
-        #print(f"Layer {r['layer']}: Minimum Crossbar Dimensions: {r['Minimum Crossbar Dimensions']}")
-        # print(f"Layer {r['layer']}: Optimal OU Config: {r['Rank Based Pareto Config']}")
-        print(f"Layer {r['layer']}: Minimal Xbar Dimension: {r['Ideal Crossbar Dimensions']} Optimal OU Config: {r['Rank Based Pareto Config']['ou_row']}x{r['Rank Based Pareto Config']['ou_col']}, Latency: {r['Rank Based Pareto Config']['latency']}, Energy: {r['Rank Based Pareto Config']['energy']}, Power Density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
+            # for lr in layers:
+            #     print(f"\nLayer {lr['layer']}:")
+            #     for a in lr["allocations"]:
+            #         print(" ", a)
+            #     print(f"  → Time: {lr['time_s']:.3e}s, Energy: {lr['energy_J']:.3e}J, "
+            #         f"Power: {lr['avg_power_W']:.3e}W, MaxP: {lr['max_chiplet_power_W']:.3e}W, EDP: {lr['edp']:.3e}")
+
+            # for r in res:
+            #     #print(f"Layer {r['layer']}: Minimum Crossbar Dimensions: {r['Minimum Crossbar Dimensions']}")
+            #     # print(f"Layer {r['layer']}: Optimal OU Config: {r['Rank Based Pareto Config']}")
+            #     print(f"Layer {r['layer']}: Minimal Xbar Dimension: {r['Ideal Crossbar Dimensions']} Optimal OU Config: {r['Rank Based Pareto Config']['ou_row']}x{r['Rank Based Pareto Config']['ou_col']}, Latency: {r['Rank Based Pareto Config']['latency']}, Energy: {r['Rank Based Pareto Config']['energy']}, Power Density: {r['Rank Based Pareto Config']['power_density']:.2f} W")
+            
+            # plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, chipletName=chip, configs=res)
+
 
     # configs, layerStats = computeCrossbarMetricsSweepOnOneLayer("Standard", workload_csv, layer_index = 2)
     # # Filter for configs under power density threshold
@@ -732,7 +1002,7 @@ if __name__ == "__main__":
     # print(compare_reciprocal_configs(file_to_compare))
 
     # Energy, tops , power_density = customizeOU(96, 128, "Standard")
-    print(customizeOU(96, 128, "Standard"))  # Example usage
-    print(customizeOU(64, 128, "Standard"))  # Example usage
+    # print(customizeOU(96, 128, "Standard"))  # Example usage
+    # print(customizeOU(64, 128, "Standard"))  # Example usage
 
-    plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, chipletName="Standard", configs=res)
+    

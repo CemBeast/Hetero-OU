@@ -187,16 +187,17 @@ def analyze_model(name, model_fn, threshold=1e-3):
 
 # List of models to extract info on
 models_to_run = {
-    "VGG19":     models.vgg19_bn,
-    "ResNet50":  models.resnet50,
-    "ResNet101": models.resnet101,
-    "ResNet152": models.resnet152,
+    # "VGG19":     models.vgg19_bn,
+    # "ResNet50":  models.resnet50,
+    # "ResNet101": models.resnet101,
+    # "ResNet152": models.resnet152,
+    "ResNet34":    models.resnet34
 }
 
 # Saves each models stats within the workload folder
 for name, fn in models_to_run.items():
     df = analyze_model(name, fn)
-    # filename = f"workloads/{name.lower()}_stats.csv"  # Save in folder
-    # df.to_csv(filename, index=False)
-    # print(f"Saved: {filename}")
+    filename = f"workloads/{name.lower()}_stats.csv"  # Save in folder
+    df.to_csv(filename, index=False)
+    print(f"Saved: {filename}")
 

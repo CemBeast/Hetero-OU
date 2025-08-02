@@ -249,13 +249,14 @@ def scheduler(csv_path, chip_distribution):
                     weight_nonzero_bits,
                     row["Activation_Sparsity(0-1)"]
                 )
+            
 
             # base values if optimization method is not wanted
             # r = chiplet_specs[chip["type"]]["base"][0]
             # c = chiplet_specs[chip["type"]]["base"][1]
             # tops = chiplet_specs[chip["type"]]["tops"]
             # epm = chiplet_specs[chip["type"]]["energy_per_mac"]
-            # print(f"Rows: {r}, Cols: {c}, TOPS: {tops}, E/MAC: {epm:.5e} J")
+            print(f"Rows: {r}, Cols: {c}, TOPS: {tops}, E/MAC: {epm:.5e} J")
 
             frac        = alloc / total_bits
             macs_assigned = total_macs * frac
@@ -772,7 +773,7 @@ if __name__ == "__main__":
         { "layer": int(row["Layer #"]), "activations_kb": float(row["Activations(KB)"]) }
         for _, row in df.iterrows()
     ]
-    chip_dist    = [0, 10, 0, 0, 0]# hetOU
+    chip_dist    = [100, 0, 0, 0, 0]# hetOU
     results      = scheduler(workload_csv, chip_dist)
 
     # per-layer details
